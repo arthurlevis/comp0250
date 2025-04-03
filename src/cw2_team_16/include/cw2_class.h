@@ -113,7 +113,7 @@ private:
 
   // Robot frames & pre-defined gripper widths
   std::string base_frame_ = "panda_link0";
-  double gripper_open_ = 0.06;   // 60mm = (max opening = 80mm -> check finger joints in hand.xacro)
+  double gripper_open_ = 0.06;  // 60mm (max opening = 80mm -> check finger joints in hand.xacro)
   double gripper_closed_ = 0.01; // 10mm
 
   // Default pose
