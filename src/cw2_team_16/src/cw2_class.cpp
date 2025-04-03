@@ -13,6 +13,8 @@ cw2::cw2(ros::NodeHandle nh)
 
   nh_ = nh;
   base_frame_ = "panda_link0";
+  nh.setParam("/panda_arm_controller/action_monitor_rate", 40.0);
+  nh.setParam("/panda_arm_controller/constraints/goal_time", 40.0);
 
   // Advertise solutions for coursework tasks
   t1_service_  = nh_.advertiseService("/task1_start", 
@@ -22,25 +24,21 @@ cw2::cw2(ros::NodeHandle nh)
   t3_service_  = nh_.advertiseService("/task3_start",
     &cw2::t3_callback, this);
   
-  arm_group_.setMaxVelocityScalingFactor(0.25);
-  hand_group_.setMaxVelocityScalingFactor(0.25); 
+  // arm_group_.setMaxVelocityScalingFactor(0.5);
+  // hand_group_.setMaxVelocityScalingFactor(0.5); 
   
   // Set planning parameters
-  arm_group_.setPlanningTime(15.0);
-  arm_group_.setNumPlanningAttempts(1000);
+  arm_group_.setPlanningTime(40.0);
+  arm_group_.setNumPlanningAttempts(2000);
   arm_group_.allowReplanning(true);
 
-  // Set tolerances
-  arm_group_.setGoalJointTolerance(0.01);  // m      
-  arm_group_.setGoalPositionTolerance(0.01);  // m 
-  arm_group_.setGoalOrientationTolerance(0.1);  // rad 
-
-  // // Subscribe to point cloud
-  // pointcloud_sub_ = nh_.subscribe("/r200/camera/depth_registered/points", 1, &cw2::pointCloudCallback, this);
-  // cloud_ptr_ = boost::make_shared<pcl::PointCloud<pcl::PointXYZRGBA>>();
+  // Set tolerances (applied after planning)
+  arm_group_.setGoalJointTolerance(0.1);  // error per joint      
+  arm_group_.setGoalPositionTolerance(0.07);  // 5 cm 
+  arm_group_.setGoalOrientationTolerance(0.3);  // rad 
 
   // Get default pose
-  default_pose_ = arm_group_.getCurrentPose();
+  default_pose_ = arm_group_.getCurrentPose(); 
 
   ROS_INFO("cw2 class initialised");
 }
@@ -60,11 +58,12 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   std::string shape_type = request.shape_type;
   geometry_msgs::PointStamped goal_point = request.goal_point;
 
-  ROS_INFO("Task 1: Shape type = %s", shape_type.c_str());
-
-  ROS_INFO("Basket position: x=%.3f, y=%.3f, z=%.3f", 
-    goal_point.point.x, goal_point.point.y, goal_point.point.z);
-
+  // ROS_INFO("Object position: x=%.3f, y=%.3f, z=%.3f", 
+  //   object_point.point.x, object_point.point.y, object_point.point.z);
+  // ROS_INFO("Task 1: Shape type = %s", shape_type.c_str());
+  // ROS_INFO("Basket position: x=%.3f, y=%.3f, z=%.3f", 
+  //   goal_point.point.x, goal_point.point.y, goal_point.point.z);
+  
   // 1. Move the arm to a pre-grasp offset (25 cm above the object)
   ROS_DEBUG("Moving to pre-grasp offset...");
   if (!moveToPreGraspOffset(object_point, shape_type, 0.25)) {
@@ -81,9 +80,9 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Gripper opened successfully.");
 
-  // 3. Lower the arm to grasp position (lower by 15.5 cm).
+  // 3. Lower the arm to grasp position
   ROS_DEBUG("Lowering arm to grasp the object...");
-  if (!lowerToObject(0.13)) {
+  if (!lowerToObject(0.12)) {  // ENTER VALUE HERE
   ROS_ERROR("Failed to lower to object.");
   return true;
   }
@@ -97,20 +96,20 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Object grasped successfully.");
 
-  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7 as successful,
+  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
   // potentially placing nothing in the basket.
 
-  // 5. Move the arm to safely lift the object (raise by 15.5 cm).
+  // 5. Move the arm to lift the object
   ROS_DEBUG("Lifting the object...");
-  if (!liftObject(0.13)) {
+  if (!liftObject(0.30)) {  // ENTER VALUE HERE
   ROS_ERROR("Failed to lift the object.");
   return true;
   }
   ROS_DEBUG("Object lifted successfully.");
 
-  // 6. Move the arm to pre-place offset (25 cm above the basket).
+  // 6. Move the arm to pre-place offset (30 cm above the basket).
   ROS_DEBUG("Moving to pre-place offset...");
-  if (!moveToBasketOffset(goal_point, 0.25)) {
+  if (!moveToBasketOffset(goal_point, 0.30)) {
   ROS_ERROR("Failed to move to pre-place offset.");
   return true;
   }
@@ -123,6 +122,14 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   return true;
   }
   ROS_DEBUG("Object released successfully.");
+
+  // // 8. Lift gripper vertically after release 
+  // ROS_DEBUG("Lifting the gripper after release...");
+  // if (!liftObject(0.15)) {  // ENTER VALUE HERE
+  // ROS_ERROR("Failed to lift the gripper.");
+  // return true;
+  // }
+  // ROS_DEBUG("Gripper lifted successfully.");
 
   ROS_INFO("Task 1: Pick and Place completed successfully");
 
@@ -186,14 +193,66 @@ cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
   q.normalize();
   pre_grasp_pose.pose.orientation = tf2::toMsg(q);
 
-  // Execute cartesian path using the helper function (defined below)
+  // Create a waypoint vector for CARTESIAN PATH planning
   std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(pre_grasp_pose.pose);
-  if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
-    ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
-    return false;
+  waypoints.push_back(pre_grasp_pose.pose);  // singular waypoint
+
+  // Create constraints for JOINT-SPACE planning
+  moveit_msgs::Constraints constraints;
+  // Position
+  moveit_msgs::PositionConstraint pcm;
+  pcm.header.frame_id = "panda_link0";
+  pcm.link_name = arm_group_.getEndEffectorLink();
+  pcm.constraint_region.primitives.resize(1);
+  pcm.constraint_region.primitives[0].type = shape_msgs::SolidPrimitive::CYLINDER;
+  pcm.constraint_region.primitives[0].dimensions = {2,0, 1.0};  // Radius 2m, height 1m
+  pcm.constraint_region.primitive_poses.resize(1);
+  pcm.constraint_region.primitive_poses[0].position.z = 0.05;  // z = 50mm to avoid collision with object
+  pcm.weight = 0.5;
+  // Orientation
+  moveit_msgs::OrientationConstraint ocm;
+  ocm.link_name = arm_group_.getEndEffectorLink();
+  ocm.header.frame_id = "panda_link0";
+  ocm.orientation = pre_grasp_pose.pose.orientation;
+  ocm.absolute_x_axis_tolerance = 0.5; 
+  ocm.absolute_y_axis_tolerance = 0.5;
+  ocm.absolute_z_axis_tolerance = 0.5; 
+  ocm.weight = 1.0;
+  constraints.orientation_constraints.push_back(ocm);
+
+  // Apply constraints
+  arm_group_.setPathConstraints(constraints);
+
+  // // Execute Cartesian path using the helper function (defined below)
+  // if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
+  //   ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
+  //   return false;
+  // }
+
+  // Try executing the Cartesian path
+  bool success = false;
+  if (planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
+      success = true;
+  } else {
+      // Fallback to joint-space planning
+      ROS_WARN("Cartesian planning failed, trying joint-space planning...");
+      arm_group_.setPoseTarget(pre_grasp_pose);
+      moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
+      if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+          success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+      }
   }
-  ROS_INFO("moveToPreGraspOffset: Reached pre-grasp offset of %.3f m", offset_z);
+
+  // Clear constraints
+  arm_group_.clearPathConstraints();
+
+  // Planning success
+  if (!success) {
+      ROS_ERROR("All planning attempts failed");
+      return false;
+  }
+
+  // ROS_INFO("moveToPreGraspOffset: Reached pre-grasp offset of %.3f m", offset_z);
   return true;
 }
 
@@ -301,17 +360,66 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point,
   pre_place_pose.pose.position.z = goal_point.point.z + offset_z;
   pre_place_pose.pose.orientation = arm_group_.getCurrentPose().pose.orientation;
 
-  // Create a waypoint vector for Cartesian path planning
+  // Create a waypoint vector for CARTESIAN path planning
   std::vector<geometry_msgs::Pose> waypoints;
   waypoints.push_back(pre_place_pose.pose);
-  
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "moveToBasketOffset")) {
-    ROS_ERROR("moveToBasketOffset: Motion failed after multiple attempts.");
-    return false;
+
+  // Create constraints for JOINT-SPACE planning
+  // Position
+  moveit_msgs::Constraints constraints;
+  moveit_msgs::PositionConstraint pcm;
+  pcm.header.frame_id = "panda_link0";
+  pcm.link_name = arm_group_.getEndEffectorLink();
+  pcm.constraint_region.primitives.resize(1);
+  pcm.constraint_region.primitives[0].type = shape_msgs::SolidPrimitive::CYLINDER;
+  pcm.constraint_region.primitives[0].dimensions = {2.0, 1.0};  // Radius 2m, height 1m
+  pcm.constraint_region.primitive_poses.resize(1);
+  pcm.constraint_region.primitive_poses[0].position.z = 0.06;  // z = 60mm to avoid collision with basket
+  pcm.weight = 0.5;
+  // Orientation
+  moveit_msgs::OrientationConstraint ocm;
+  ocm.link_name = arm_group_.getEndEffectorLink();
+  ocm.header.frame_id = "panda_link0";
+  ocm.orientation = pre_place_pose.pose.orientation;
+  ocm.absolute_x_axis_tolerance = 0.2; 
+  ocm.absolute_y_axis_tolerance = 0.2;
+  ocm.absolute_z_axis_tolerance = M_PI;  
+  ocm.weight = 1.0;
+  constraints.orientation_constraints.push_back(ocm);
+
+  // Apply constraints
+  arm_group_.setPathConstraints(constraints);
+
+  // // Execute Cartesian path
+  // if (!planAndExecuteCartesian(waypoints, "moveToBasketOffset")) {
+  //   ROS_ERROR("moveToBasketOffset: Motion failed after multiple attempts.");
+  //   return false;
+  // }
+
+  // Try executing the Cartesian path
+  bool success = false;
+  if (planAndExecuteCartesian(waypoints, "moveToBasketOffset")) {
+      success = true;
+  } else {
+      // Fallback to joint-space planning
+      ROS_WARN("Cartesian planning failed, trying joint-space planning...");
+      arm_group_.setPoseTarget(pre_place_pose);
+      moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
+      if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+          success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+      }
+  }
+
+  // Clear constraints
+  arm_group_.clearPathConstraints();
+
+  // Planning success
+  if (!success) {
+      ROS_ERROR("All planning attempts failed");
+      return false;
   }
   
-  ROS_INFO("moveToBasketOffset: Reached pre-place offset of %.3f m", offset_z);
+  // ROS_INFO("moveToBasketOffset: Reached pre-place offset of %.3f m", offset_z);
   return true;
 }
 
@@ -320,7 +428,7 @@ bool
 cw2::releaseObject()
 {
   ROS_INFO("releaseObject: Releasing object...");
-  double width = gripper_open_;  // predefined
+  double width = gripper_open_ + 0.02; 
   double eachJoint = width / 2.0;
 
   std::vector<double> gripperJointTargets(2, eachJoint);
@@ -350,8 +458,8 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
                           const std::string &action_name)
 {
   moveit_msgs::RobotTrajectory trajectory;
-  int max_planning_attempts = 3;
-  double eef_step = 0.01;       // Initial step size of 1cm for end effector
+  int max_planning_attempts = 10;
+  double eef_step = 0.1;       // Initial step size of 1cm for end effector (was 0.01 initally)
   double jump_threshold = 0.0;  // Deprecated, but required by the current overload
 
   // Outer loop: Try planning with increasingly larger step sizes
