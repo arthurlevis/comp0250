@@ -1,4 +1,4 @@
-Authors: Eddie Edwards (eddie.edwards@ucl.ac.uk), Kefeng Huang, Bowie (Heiyin) Wong, Dimitrios Kanoulas, Luke Beddow, Denis Hadjivelichkov
+<!-- Authors: Eddie Edwards (eddie.edwards@ucl.ac.uk), Kefeng Huang, Bowie (Heiyin) Wong, Dimitrios Kanoulas, Luke Beddow, Denis Hadjivelichkov
 
 Description: This package forms the base ROS workspace for the module COMP0250 (formerly COMP0129): Robotic Sensing, Manipulation and Interaction.
 
@@ -62,4 +62,4 @@ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
 OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS INFORMATION AND/OR
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-Copyright (C) 2019-2024 Dimitrios Kanoulas and Eddie Edwards except where specified
+Copyright (C) 2019-2024 Dimitrios Kanoulas and Eddie Edwards except where specified -->
