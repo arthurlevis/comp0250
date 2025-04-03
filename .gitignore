@@ -7,3 +7,5 @@ logs
 .catkin_tools/
 .catkin_tools
 .vscode
+__pycache__/
+*.py[cod]
