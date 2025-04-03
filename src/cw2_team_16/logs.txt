@@ -1,0 +1,282 @@
+You can start planning now!
+
+[spawn_model-11] process has finished cleanly
+log file: /home/arthur/.ros/log/420f377e-1033-11f0-a477-9d4033dabd73/spawn_model-11*.log
+[ INFO] [1743647284.859088192, 1.557000000]: Ready to take commands for planning group panda_arm.
+[ INFO] [1743647284.874856142, 1.573000000]: Ready to take commands for planning group hand.
+[ INFO] [1743647285.880354719, 1.680000000]: Didn't receive robot state (joint angles) with recent timestamp within 1 seconds.
+Check clock synchronization if your are running ROS across multiple machines!
+[ERROR] [1743647285.880405903, 1.680000000]: Failed to fetch current robot state
+[ INFO] [1743647285.880434599, 1.680000000]: cw2 class initialised
+[ WARN] [1743647286.416053977, 1.680000000]: Skipping virtual joint 'virtual_joint' because its child frame 'panda_link0' does not match the URDF frame 'world'
+[INFO] [1743647286.543510, 1.800000]: Ready to initiate task.
+[INFO] [1743647286.543975, 1.800000]: Use rosservice call /task <INDEX> to start a task
+[WARN] [1743647286.567195, 1.827000]: If Gazebo freezes when you call a task you need to run in your terminal the following: export GAZEBO_MODEL_PATH=/home/arthur/ROS/comp0250/src/cw2_world_spawner/models
+
+ATTEMPT 1
+[INFO] [1743647326.442007, 40.983000]: ================Starting Task1==============
+/home/arthur/ROS/comp0250/src/cw2_world_spawner/scripts/world_spawner.py:293: DeprecationWarning: This function is deprecated. Please call randint(0, 2 + 1) instead
+  random_goal = BASKET_LOCATIONS[np.random.random_integers(0, len(BASKET_LOCATIONS)) - 1]
+[ INFO] [1743647328.222897112, 42.386000000]: The coursework solving callback for task 1 has been triggered
+[ INFO] [1743647328.222959340, 42.386000000]: Task 1: Shape type = cross
+[ INFO] [1743647328.222981403, 42.386000000]: Basket position: x=-0.410, y=0.360, z=0.025
+[ INFO] [1743647328.223073424, 42.386000000]: moveToPreGraspOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647328.224078369, 42.387000000]: Received request to compute Cartesian path
+[ INFO] [1743647328.224232160, 42.387000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647328.227146226, 42.388000000]: Computed Cartesian path with 41 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647328.227465797, 42.388000000]: moveToPreGraspOffset: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647328.227909413, 42.388000000]: Execution request received
+[ INFO] [1743647330.066296159, 44.145000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647330.086998185, 44.156000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647330.087111792, 44.156000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647330.110811508, 44.180000000]: moveToPreGraspOffset: Execution succeeded on attempt 1
+[ INFO] [1743647330.110864481, 44.180000000]: moveToPreGraspOffset: Reached pre-grasp offset of 0.250 m
+[ INFO] [1743647330.110892258, 44.180000000]: openGripper: Opening the gripper...
+[ INFO] [1743647330.113859469, 44.184000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647330.115544697, 44.186000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647330.115952484, 44.186000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647330.126747790, 44.198000000]: hand/hand: Created 6 states (2 start + 4 goal)
+[ INFO] [1743647330.126805794, 44.198000000]: Solution found in 0.011015 seconds
+[ INFO] [1743647330.134145330, 44.198000000]: SimpleSetup: Path simplification took 0.007253 seconds and changed from 5 to 2 states
+[ INFO] [1743647330.218739063, 44.286000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647330.218849096, 44.286000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647330.220252965, 44.288000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647330.220446644, 44.288000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647330.231233161, 44.300000000]: hand/hand: Created 6 states (2 start + 4 goal)
+[ INFO] [1743647330.231276282, 44.300000000]: Solution found in 0.010902 seconds
+[ INFO] [1743647330.236502582, 44.303000000]: SimpleSetup: Path simplification took 0.005184 seconds and changed from 5 to 2 states
+[ INFO] [1743647331.568940216, 45.567000000]: Controller 'panda_hand_controller' successfully finished
+[ INFO] [1743647331.576262638, 45.574000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647332.216921656, 46.180000000]: openGripper: Gripper opened.
+[ INFO] [1743647332.326958701, 46.282000000]: lowerToObject: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647332.327907156, 46.283000000]: Received request to compute Cartesian path
+[ INFO] [1743647332.328003968, 46.283000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647332.329032406, 46.283000000]: Computed Cartesian path with 14 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647332.329544727, 46.285000000]: lowerToObject: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647332.329783647, 46.285000000]: Execution request received
+[ INFO] [1743647333.717617398, 47.644000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647333.717704910, 47.644000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647333.717778307, 47.644000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647333.759708176, 47.680000000]: lowerToObject: Execution succeeded on attempt 1
+[ INFO] [1743647333.759763246, 47.680000000]: lowerToObject: Reached grasp position.
+[ INFO] [1743647333.759791401, 47.680000000]: closeGripper: Closing the gripper...
+[ INFO] [1743647333.763300970, 47.684000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647333.764353611, 47.685000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647333.764498351, 47.685000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647333.775524543, 47.698000000]: hand/hand: Created 6 states (2 start + 4 goal)
+[ INFO] [1743647333.775574294, 47.698000000]: Solution found in 0.011120 seconds
+[ INFO] [1743647333.785111772, 47.709000000]: SimpleSetup: Path simplification took 0.009477 seconds and changed from 5 to 2 states
+[ INFO] [1743647333.860037284, 47.784000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647333.860080444, 47.784000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647333.861142847, 47.785000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647333.861383616, 47.785000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647333.872446319, 47.798000000]: hand/hand: Created 6 states (2 start + 4 goal)
+[ INFO] [1743647333.872506862, 47.798000000]: Solution found in 0.011179 seconds
+[ INFO] [1743647333.883434761, 47.809000000]: SimpleSetup: Path simplification took 0.010826 seconds and changed from 5 to 2 states
+[ WARN] [1743647335.263702641, 49.145000000]: Controller 'panda_hand_controller' failed with error GOAL_TOLERANCE_VIOLATED: panda_finger_joint2 goal error -0.008379
+[ WARN] [1743647335.263808745, 49.145000000]: Controller handle panda_hand_controller reports status ABORTED
+[ INFO] [1743647335.263831837, 49.145000000]: Completed trajectory execution with status ABORTED ...
+[ INFO] [1743647335.300309838, 49.181000000]: ABORTED: CONTROL_FAILED
+[ INFO] [1743647335.842923499, 49.681000000]: closeGripper: Gripper closed.
+[ INFO] [1743647335.950770406, 49.781000000]: raiseFromObject: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647335.951754297, 49.782000000]: Received request to compute Cartesian path
+[ INFO] [1743647335.951834573, 49.782000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647335.953196311, 49.783000000]: Computed Cartesian path with 14 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647335.953384380, 49.782000000]: raiseFromObject: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647335.953652942, 49.783000000]: Execution request received
+[ INFO] [1743647336.884823949, 50.644000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647336.884928811, 50.644000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647336.885007348, 50.645000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647336.922645645, 50.681000000]: raiseFromObject: Execution succeeded on attempt 1
+[ INFO] [1743647336.922703850, 50.681000000]: raiseFromObject: Object lifted successfully.
+[ INFO] [1743647337.023978195, 50.780000000]: moveToBasketOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647337.025183699, 50.782000000]: Received request to compute Cartesian path
+[ INFO] [1743647337.025252422, 50.782000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647337.031717531, 50.782000000]: Computed Cartesian path with 100 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647337.032081867, 50.789000000]: moveToBasketOffset: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647337.032492137, 50.789000000]: Execution request received
+[ INFO] [1743647340.897104790, 54.402000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647340.918826259, 54.424000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647340.918975333, 54.424000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647340.978208577, 54.480000000]: moveToBasketOffset: Execution succeeded on attempt 1
+[ INFO] [1743647340.978257187, 54.480000000]: moveToBasketOffset: Reached pre-place offset of 0.250 m
+[ INFO] [1743647340.978273203, 54.480000000]: releaseObject: Releasing object...
+[ INFO] [1743647340.982665654, 54.484000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647340.983708093, 54.485000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647340.983866498, 54.485000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647340.994421832, 54.495000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647340.994464933, 54.495000000]: Solution found in 0.010652 seconds
+[ INFO] [1743647340.998011067, 54.499000000]: SimpleSetup: Path simplification took 0.003511 seconds and changed from 4 to 2 states
+[ INFO] [1743647341.098619333, 54.584000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647341.098695513, 54.584000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647341.099825074, 54.585000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647341.099984439, 54.585000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647341.110554806, 54.596000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647341.110595287, 54.596000000]: Solution found in 0.010668 seconds
+[ INFO] [1743647341.113915880, 54.596000000]: SimpleSetup: Path simplification took 0.003282 seconds and changed from 4 to 2 states
+[ INFO] [1743647341.680112514, 55.108000000]: Controller 'panda_hand_controller' successfully finished
+[ INFO] [1743647341.685006541, 55.114000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647342.279544907, 55.682000000]: releaseObject: Object released.
+[ INFO] [1743647342.279607621, 55.682000000]: Task 1: Pick and Place completed successfully
+
+ATTEMPT 2
+[INFO] [1743647386.138953, 97.198000]: ================Starting Task1==============
+[ INFO] [1743647388.508120246, 99.303000000]: The coursework solving callback for task 1 has been triggered
+[ INFO] [1743647388.508165537, 99.303000000]: Task 1: Shape type = cross
+[ INFO] [1743647388.508191549, 99.303000000]: Basket position: x=-0.410, y=0.360, z=0.024
+[ INFO] [1743647388.508226923, 99.303000000]: moveToPreGraspOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647388.508944307, 99.304000000]: Received request to compute Cartesian path
+[ INFO] [1743647388.509016210, 99.304000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647388.545431221, 99.333000000]: Computed Cartesian path with 38 points (followed 29.523810% of requested trajectory)
+[ WARN] [1743647388.545656960, 99.335000000]: moveToPreGraspOffset: Cartesian path planning achieved only 29.5238%. Retrying with reduced constraints.
+[ INFO] [1743647388.545709049, 99.335000000]: moveToPreGraspOffset: Planning attempt 2 with eef_step = 0.015
+[ INFO] [1743647388.546693220, 99.337000000]: Received request to compute Cartesian path
+[ INFO] [1743647388.546749127, 99.337000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.015000 m (in global reference frame)
+[ INFO] [1743647388.584108451, 99.373000000]: Computed Cartesian path with 29 points (followed 30.000000% of requested trajectory)
+[ WARN] [1743647388.584297636, 99.373000000]: moveToPreGraspOffset: Cartesian path planning achieved only 30%. Retrying with reduced constraints.
+[ INFO] [1743647388.584323078, 99.373000000]: moveToPreGraspOffset: Planning attempt 3 with eef_step = 0.0225
+[ INFO] [1743647388.585030960, 99.374000000]: Received request to compute Cartesian path
+[ INFO] [1743647388.585079763, 99.374000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.022500 m (in global reference frame)
+[ INFO] [1743647388.640202018, 99.427000000]: Computed Cartesian path with 23 points (followed 29.787234% of requested trajectory)
+[ WARN] [1743647388.640509088, 99.427000000]: moveToPreGraspOffset: Cartesian path planning achieved only 29.7872%. Retrying with reduced constraints.
+[ERROR] [1743647388.640542507, 99.427000000]: moveToPreGraspOffset: All planning attempts failed.
+[ERROR] [1743647388.640559137, 99.427000000]: moveToPreGraspOffset: Motion failed after multiple attempts.
+[ERROR] [1743647388.640573850, 99.427000000]: Failed to move to pre-grasp offset.
+
+ATTEMPT 3
+[INFO] [1743647422.200737, 131.288000]: ================Starting Task1==============
+[ INFO] [1743647424.669450796, 133.387000000]: The coursework solving callback for task 1 has been triggered
+[ INFO] [1743647424.669487275, 133.387000000]: Task 1: Shape type = nought
+[ INFO] [1743647424.669505654, 133.387000000]: Basket position: x=-0.410, y=-0.360, z=0.024
+[ INFO] [1743647424.669552567, 133.387000000]: moveToPreGraspOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647424.670396334, 133.388000000]: Received request to compute Cartesian path
+[ INFO] [1743647424.670516783, 133.388000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647424.767709074, 133.468000000]: Computed Cartesian path with 34 points (followed 28.703704% of requested trajectory)
+[ WARN] [1743647424.767951951, 133.468000000]: moveToPreGraspOffset: Cartesian path planning achieved only 28.7037%. Retrying with reduced constraints.
+[ INFO] [1743647424.768000276, 133.468000000]: moveToPreGraspOffset: Planning attempt 2 with eef_step = 0.015
+[ INFO] [1743647424.768843275, 133.469000000]: Received request to compute Cartesian path
+[ INFO] [1743647424.768892489, 133.469000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.015000 m (in global reference frame)
+[ INFO] [1743647424.829831152, 133.517000000]: Computed Cartesian path with 27 points (followed 27.777778% of requested trajectory)
+[ WARN] [1743647424.830080859, 133.517000000]: moveToPreGraspOffset: Cartesian path planning achieved only 27.7778%. Retrying with reduced constraints.
+[ INFO] [1743647424.830119389, 133.517000000]: moveToPreGraspOffset: Planning attempt 3 with eef_step = 0.0225
+[ INFO] [1743647424.831184063, 133.519000000]: Received request to compute Cartesian path
+[ INFO] [1743647424.831256272, 133.519000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.022500 m (in global reference frame)
+[ INFO] [1743647424.902516122, 133.594000000]: Computed Cartesian path with 29 points (followed 27.083333% of requested trajectory)
+[ WARN] [1743647424.902894105, 133.594000000]: moveToPreGraspOffset: Cartesian path planning achieved only 27.0833%. Retrying with reduced constraints.
+[ERROR] [1743647424.902943774, 133.594000000]: moveToPreGraspOffset: All planning attempts failed.
+[ERROR] [1743647424.902975562, 133.594000000]: moveToPreGraspOffset: Motion failed after multiple attempts.
+[ERROR] [1743647424.903005195, 133.594000000]: Failed to move to pre-grasp offset.
+
+ATTEMPT 4
+[INFO] [1743647438.404633, 146.371000]: ================Starting Task1==============
+[ INFO] [1743647440.818206712, 148.441000000]: The coursework solving callback for task 1 has been triggered
+[ INFO] [1743647440.818272227, 148.441000000]: Task 1: Shape type = nought
+[ INFO] [1743647440.818301257, 148.441000000]: Basket position: x=-0.410, y=0.360, z=0.024
+[ INFO] [1743647440.818342877, 148.441000000]: moveToPreGraspOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647440.819256203, 148.441000000]: Received request to compute Cartesian path
+[ INFO] [1743647440.819336719, 148.441000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647440.824982942, 148.447000000]: Computed Cartesian path with 88 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647440.830057997, 148.452000000]: moveToPreGraspOffset: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647440.834575406, 148.452000000]: Execution request received
+[ INFO] [1743647444.042799553, 151.505000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647444.050143396, 151.514000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647444.050257816, 151.514000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647444.126365504, 151.580000000]: moveToPreGraspOffset: Execution succeeded on attempt 1
+[ INFO] [1743647444.126450789, 151.580000000]: moveToPreGraspOffset: Reached pre-grasp offset of 0.250 m
+[ INFO] [1743647444.126479274, 151.580000000]: openGripper: Opening the gripper...
+[ INFO] [1743647444.129631944, 151.584000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647444.130725293, 151.586000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647444.130834632, 151.586000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647444.141156419, 151.598000000]: hand/hand: Created 4 states (2 start + 2 goal)
+[ INFO] [1743647444.141202743, 151.598000000]: Solution found in 0.010401 seconds
+[ INFO] [1743647444.142682944, 151.598000000]: SimpleSetup: Path simplification took 0.001445 seconds and changed from 3 to 2 states
+[ INFO] [1743647444.234449400, 151.686000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647444.234512394, 151.686000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647444.235815532, 151.686000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647444.235993120, 151.686000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647444.246456268, 151.698000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647444.246504433, 151.698000000]: Solution found in 0.010577 seconds
+[ INFO] [1743647444.247904767, 151.698000000]: SimpleSetup: Path simplification took 0.001370 seconds and changed from 4 to 2 states
+[ INFO] [1743647444.312524851, 151.757000000]: Controller 'panda_hand_controller' successfully finished
+[ INFO] [1743647444.318880568, 151.764000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647444.867082798, 152.280000000]: openGripper: Gripper opened.
+[ INFO] [1743647444.975019111, 152.380000000]: lowerToObject: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647444.976813962, 152.382000000]: Received request to compute Cartesian path
+[ INFO] [1743647444.976915042, 152.382000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647444.978433206, 152.382000000]: Computed Cartesian path with 14 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647444.978788335, 152.382000000]: lowerToObject: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647444.979483766, 152.382000000]: Execution request received
+[ERROR] [1743647446.600470267, 153.946000000]: Controller is taking too long to execute trajectory (the expected upper bound for the trajectory execution was 1.561073 seconds). Stopping trajectory.
+[ INFO] [1743647446.600548881, 153.946000000]: Cancelling execution for panda_arm_controller
+[ INFO] [1743647446.600663613, 153.946000000]: Completed trajectory execution with status TIMED_OUT ...
+[ INFO] [1743647446.600741519, 153.946000000]: Execution completed: TIMED_OUT
+[ INFO] [1743647446.601445464, 153.946000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647446.640437141, 153.980000000]: ABORTED: TIMED_OUT
+[ WARN] [1743647446.640491528, 153.980000000]: lowerToObject: Execution attempt 1 failed.
+[ INFO] [1743647446.640513859, 153.980000000]: lowerToObject: Perturbing final waypoint for retry.
+[ INFO] [1743647446.641495561, 153.981000000]: Received request to compute Cartesian path
+[ INFO] [1743647446.641606412, 153.981000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647446.642242269, 153.982000000]: Computed Cartesian path with 6 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647446.642634880, 153.983000000]: Execution request received
+[ INFO] [1743647447.287522291, 154.584000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647447.287625776, 154.584000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647447.287689179, 154.584000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647447.389311207, 154.680000000]: lowerToObject: Execution succeeded on attempt 2
+[ INFO] [1743647447.389363270, 154.680000000]: lowerToObject: Reached grasp position.
+[ INFO] [1743647447.389389011, 154.680000000]: closeGripper: Closing the gripper...
+[ INFO] [1743647447.392742715, 154.684000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647447.393718053, 154.685000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647447.393835432, 154.685000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647447.404507612, 154.696000000]: hand/hand: Created 7 states (2 start + 5 goal)
+[ INFO] [1743647447.404538489, 154.696000000]: Solution found in 0.010745 seconds
+[ INFO] [1743647447.410099248, 154.702000000]: SimpleSetup: Path simplification took 0.005511 seconds and changed from 6 to 2 states
+[ INFO] [1743647447.493755145, 154.784000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647447.493795027, 154.784000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647447.494716301, 154.785000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647447.494866008, 154.785000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647447.505342663, 154.794000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647447.505381253, 154.794000000]: Solution found in 0.010579 seconds
+[ INFO] [1743647447.510017143, 154.799000000]: SimpleSetup: Path simplification took 0.004596 seconds and changed from 4 to 2 states
+[ INFO] [1743647448.550461029, 155.805000000]: Controller 'panda_hand_controller' successfully finished
+[ INFO] [1743647448.559391361, 155.814000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647449.148558132, 156.381000000]: closeGripper: Gripper closed.
+[ INFO] [1743647449.258546041, 156.480000000]: raiseFromObject: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647449.259850525, 156.481000000]: Received request to compute Cartesian path
+[ INFO] [1743647449.259943030, 156.481000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647449.260860859, 156.482000000]: Computed Cartesian path with 15 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647449.261027573, 156.482000000]: raiseFromObject: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647449.261376138, 156.482000000]: Execution request received
+[ INFO] [1743647450.155676849, 157.345000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647450.165410326, 157.354000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647450.165554689, 157.354000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647450.190436953, 157.381000000]: raiseFromObject: Execution succeeded on attempt 1
+[ INFO] [1743647450.190483728, 157.381000000]: raiseFromObject: Object lifted successfully.
+[ INFO] [1743647450.302414938, 157.480000000]: moveToBasketOffset: Planning attempt 1 with eef_step = 0.01
+[ INFO] [1743647450.303224670, 157.479000000]: Received request to compute Cartesian path
+[ INFO] [1743647450.303286554, 157.479000000]: Attempting to follow 1 waypoints for link 'panda_link8' using a step of 0.010000 m (in global reference frame)
+[ INFO] [1743647450.308179061, 157.487000000]: Computed Cartesian path with 89 points (followed 100.000000% of requested trajectory)
+[ INFO] [1743647450.308394681, 157.487000000]: moveToBasketOffset: Cartesian path computed successfully with fraction 1
+[ INFO] [1743647450.308635874, 157.487000000]: Execution request received
+[ INFO] [1743647453.205354297, 160.195000000]: Controller 'panda_arm_controller' successfully finished
+[ INFO] [1743647453.223058673, 160.214000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647453.223153840, 160.214000000]: Execution completed: SUCCEEDED
+[ INFO] [1743647453.290283557, 160.280000000]: moveToBasketOffset: Execution succeeded on attempt 1
+[ INFO] [1743647453.290369018, 160.280000000]: moveToBasketOffset: Reached pre-place offset of 0.250 m
+[ INFO] [1743647453.290389468, 160.280000000]: releaseObject: Releasing object...
+[ INFO] [1743647453.293294208, 160.283000000]: Planning request received for MoveGroup action. Forwarding to planning pipeline.
+[ INFO] [1743647453.294869007, 160.284000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647453.295063460, 160.284000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647453.305936896, 160.295000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647453.305989190, 160.295000000]: Solution found in 0.010998 seconds
+[ INFO] [1743647453.311290493, 160.299000000]: SimpleSetup: Path simplification took 0.005238 seconds and changed from 4 to 2 states
+[ INFO] [1743647453.415723286, 160.384000000]: Combined planning and execution request received for MoveGroup action. Forwarding to planning and execution pipeline.
+[ INFO] [1743647453.415782937, 160.384000000]: Planning attempt 1 of at most 1
+[ INFO] [1743647453.416988791, 160.385000000]: Planner configuration 'hand' will use planner 'geometric::RRTConnect'. Additional configuration parameters will be set when the planner is constructed.
+[ INFO] [1743647453.417181196, 160.385000000]: hand/hand: Starting planning with 1 states already in datastructure
+[ INFO] [1743647453.428224104, 160.397000000]: hand/hand: Created 5 states (2 start + 3 goal)
+[ INFO] [1743647453.428293264, 160.397000000]: Solution found in 0.011163 seconds
+[ INFO] [1743647453.433530347, 160.400000000]: SimpleSetup: Path simplification took 0.005165 seconds and changed from 4 to 2 states
+[ INFO] [1743647453.975118103, 160.905000000]: Controller 'panda_hand_controller' successfully finished
+[ INFO] [1743647453.991994801, 160.924000000]: Completed trajectory execution with status SUCCEEDED ...
+[ INFO] [1743647454.601422848, 161.480000000]: releaseObject: Object released.
+[ INFO] [1743647454.601472520, 161.480000000]: Task 1: Pick and Place completed successfully
