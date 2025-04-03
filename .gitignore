@@ -9,3 +9,4 @@ logs
 .vscode
 __pycache__/
 *.py[cod]
+src/cw2_team_16/logs.txt
