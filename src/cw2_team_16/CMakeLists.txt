@@ -22,6 +22,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 find_package(PCL REQUIRED)
+find_package(OpenCV REQUIRED)
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -125,6 +126,7 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 # Declare a C++ library
@@ -138,6 +140,12 @@ add_library(${PROJECT_NAME}_cw2_class_lib
 add_dependencies(${PROJECT_NAME}_cw2_class_lib 
   ${${PROJECT_NAME}_EXPORTED_TARGETS} 
   ${catkin_EXPORTED_TARGETS}
+)
+
+target_link_libraries(${PROJECT_NAME}_cw2_class_lib
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
 )
 
 # Declare a C++ executable
@@ -163,6 +171,7 @@ target_link_libraries(cw2_solution_node
   ${catkin_LIBRARIES}
   ${PROJECT_NAME}_cw2_class_lib
   ${PCL_INCLUDE_DIRS}
+  ${OpenCV_LIBS}
 )
 
 #############
