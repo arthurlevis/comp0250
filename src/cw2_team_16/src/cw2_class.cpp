@@ -13,8 +13,7 @@ cw2::cw2(ros::NodeHandle nh)
 
   nh_ = nh;
   base_frame_ = "panda_link0";
-  nh.setParam("/panda_arm_controller/action_monitor_rate", 40.0);
-  nh.setParam("/panda_arm_controller/constraints/goal_time", 40.0);
+  nh.setParam("/panda_arm_controller/constraints/goal_time", 60.0);
 
   // Advertise solutions for coursework tasks
   t1_service_  = nh_.advertiseService("/task1_start", 
@@ -24,21 +23,22 @@ cw2::cw2(ros::NodeHandle nh)
   t3_service_  = nh_.advertiseService("/task3_start",
     &cw2::t3_callback, this);
   
-  // arm_group_.setMaxVelocityScalingFactor(0.5);
-  // hand_group_.setMaxVelocityScalingFactor(0.5); 
-  
   // Set planning parameters
   arm_group_.setPlanningTime(40.0);
   arm_group_.setNumPlanningAttempts(2000);
   arm_group_.allowReplanning(true);
 
-  // Set tolerances (applied after planning)
-  arm_group_.setGoalJointTolerance(0.1);  // error per joint      
-  arm_group_.setGoalPositionTolerance(0.07);  // 5 cm 
-  arm_group_.setGoalOrientationTolerance(0.3);  // rad 
+  // // Motion velocity
+  // arm_group_.setMaxVelocityScalingFactor(0.5);
+  // hand_group_.setMaxVelocityScalingFactor(0.5); 
 
-  // Get default pose
-  default_pose_ = arm_group_.getCurrentPose(); 
+  // Default goal tolerances
+  arm_group_.setGoalJointTolerance(def_joint_tol);        // 0.01 rad (~0.6 deg) per joint      
+  arm_group_.setGoalPositionTolerance(def_pos_tol);       // 10 mm 
+  arm_group_.setGoalOrientationTolerance(def_orient_tol); // 0.01 rad
+
+  // Home pose
+  home_pose_ = arm_group_.getCurrentPose(); 
 
   ROS_INFO("cw2 class initialised");
 }
@@ -64,9 +64,9 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   // ROS_INFO("Basket position: x=%.3f, y=%.3f, z=%.3f", 
   //   goal_point.point.x, goal_point.point.y, goal_point.point.z);
   
-  // 1. Move the arm to a pre-grasp offset (25 cm above the object)
+  // 1. Move the arm to a pre-grasp offset
   ROS_DEBUG("Moving to pre-grasp offset...");
-  if (!moveToPreGraspOffset(object_point, shape_type, 0.25)) {
+  if (!moveToPreGraspOffset(object_point, shape_type)) {
   ROS_ERROR("Failed to move to pre-grasp offset.");
   return true;
   }
@@ -82,7 +82,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 3. Lower the arm to grasp position
   ROS_DEBUG("Lowering arm to grasp the object...");
-  if (!lowerToObject(0.12)) {  // ENTER VALUE HERE
+  if (!lowerToObject(object_point)) {  
   ROS_ERROR("Failed to lower to object.");
   return true;
   }
@@ -101,15 +101,15 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 5. Move the arm to lift the object
   ROS_DEBUG("Lifting the object...");
-  if (!liftObject(0.30)) {  // ENTER VALUE HERE
+  if (!liftObject(0.3)) { 
   ROS_ERROR("Failed to lift the object.");
   return true;
   }
   ROS_DEBUG("Object lifted successfully.");
 
-  // 6. Move the arm to pre-place offset (30 cm above the basket).
+  // 6. Move the arm to pre-place offset
   ROS_DEBUG("Moving to pre-place offset...");
-  if (!moveToBasketOffset(goal_point, 0.30)) {
+  if (!moveToBasketOffset(goal_point)) {
   ROS_ERROR("Failed to move to pre-place offset.");
   return true;
   }
@@ -123,15 +123,18 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Object released successfully.");
 
-  // // 8. Lift gripper vertically after release 
-  // ROS_DEBUG("Lifting the gripper after release...");
-  // if (!liftObject(0.15)) {  // ENTER VALUE HERE
-  // ROS_ERROR("Failed to lift the gripper.");
-  // return true;
-  // }
-  // ROS_DEBUG("Gripper lifted successfully.");
+  // 8. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+  arm_group_.stop();
+  arm_group_.clearPoseTargets();
+  arm_group_.setPlanningTime(20.0); 
+  arm_group_.setNamedTarget("ready");
+  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+    ROS_INFO("Returned to 'ready' position successfully.");
+  } else {
+    ROS_WARN("Failed to move to 'ready' position.");
+  }
 
-  ROS_INFO("Task 1: Pick and Place completed successfully");
+  ROS_INFO("Task 1 completed successfully.");
 
   return true;
 }
@@ -167,18 +170,15 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
 bool
 cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
-                        const std::string &shape_type,
-                        double offset_z)
+                          const std::string &shape_type)
 {
-  // Note: think about a solution for T1_ANY_ORIENTATION = true
-  // (align the object's & gripper's yaw angle)
-
-  // Calculate pregrasp pose offset according to shape
+  // Calculate pregrasp position
   geometry_msgs::PoseStamped pre_grasp_pose;
-  pre_grasp_pose.header = object_point.header;  // preserve frame_id
-  pre_grasp_pose.pose.position = object_point.point; // copy centroid position (x, y, z)
-  pre_grasp_pose.pose.position.z += offset_z;  // add vertical offset
+  pre_grasp_pose.header = object_point.header;  // preserve frame_id (panda_link0)
+  pre_grasp_pose.pose.position.x = object_point.point.x;
+  pre_grasp_pose.pose.position.y = object_point.point.y;
 
+  // Add x-y offset according to shape (grasping strategy)
   if (shape_type == "nought") {
     pre_grasp_pose.pose.position.y += 0.08;
   }
@@ -186,73 +186,40 @@ cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
     pre_grasp_pose.pose.position.x += 0.06;
   }
 
-  // Use fixed, top-down view
+  // Get the current arm pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+
+  // Enforce high enough z to avoid collisions (e.g. 2nd revolute link is at 0.33)
+  pre_grasp_pose.pose.position.z = std::max(object_point.point.z + 0.33 + fingertip_offset, 
+                                            current_pose.pose.position.z);
+
+  // Calculate pregrasp orientation
   tf2::Quaternion q;
-  double roll = 0.0, pitch = M_PI, yaw = M_PI_4 + M_PI_2;  // roll, pitch, yaw
-  q.setRPY(roll, pitch, yaw);
-  q.normalize();
+  q.setRPY(0.0, M_PI, M_PI_4 + M_PI_2);  // roll, pitch, yaw (top-down view)
   pre_grasp_pose.pose.orientation = tf2::toMsg(q);
 
-  // Create a waypoint vector for CARTESIAN PATH planning
+  // Set specific tolerances
+  arm_group_.setGoalJointTolerance(0.05);       // 0.05 rad (~2.8 deg) per joint
+  arm_group_.setGoalPositionTolerance(0.03);    // 30 mm
+  arm_group_.setGoalOrientationTolerance(0.07); // 0.07 rad (~4 deg)
+
+  // Create a waypoint vector
   std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(pre_grasp_pose.pose);  // singular waypoint
+  waypoints.push_back(pre_grasp_pose.pose);
 
-  // Create constraints for JOINT-SPACE planning
-  moveit_msgs::Constraints constraints;
-  // Position
-  moveit_msgs::PositionConstraint pcm;
-  pcm.header.frame_id = "panda_link0";
-  pcm.link_name = arm_group_.getEndEffectorLink();
-  pcm.constraint_region.primitives.resize(1);
-  pcm.constraint_region.primitives[0].type = shape_msgs::SolidPrimitive::CYLINDER;
-  pcm.constraint_region.primitives[0].dimensions = {2,0, 1.0};  // Radius 2m, height 1m
-  pcm.constraint_region.primitive_poses.resize(1);
-  pcm.constraint_region.primitive_poses[0].position.z = 0.05;  // z = 50mm to avoid collision with object
-  pcm.weight = 0.5;
-  // Orientation
-  moveit_msgs::OrientationConstraint ocm;
-  ocm.link_name = arm_group_.getEndEffectorLink();
-  ocm.header.frame_id = "panda_link0";
-  ocm.orientation = pre_grasp_pose.pose.orientation;
-  ocm.absolute_x_axis_tolerance = 0.5; 
-  ocm.absolute_y_axis_tolerance = 0.5;
-  ocm.absolute_z_axis_tolerance = 0.5; 
-  ocm.weight = 1.0;
-  constraints.orientation_constraints.push_back(ocm);
+  // Execute Cartesian path
+  if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
+    ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
+    
+    // Clear constraints
+    arm_group_.clearPathConstraints();
 
-  // Apply constraints
-  arm_group_.setPathConstraints(constraints);
+    // // Reset default tolerances (redundant, already reset in planAndExecuteCartesian helper)
+    // arm_group_.setGoalPositionTolerance(def_joint_tol);
+    // arm_group_.setGoalPositionTolerance(def_pos_tol);
 
-  // // Execute Cartesian path using the helper function (defined below)
-  // if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
-  //   ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
-  //   return false;
-  // }
-
-  // Try executing the Cartesian path
-  bool success = false;
-  if (planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
-      success = true;
-  } else {
-      // Fallback to joint-space planning
-      ROS_WARN("Cartesian planning failed, trying joint-space planning...");
-      arm_group_.setPoseTarget(pre_grasp_pose);
-      moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
-      if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-          success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-      }
+    return false;
   }
-
-  // Clear constraints
-  arm_group_.clearPathConstraints();
-
-  // Planning success
-  if (!success) {
-      ROS_ERROR("All planning attempts failed");
-      return false;
-  }
-
-  // ROS_INFO("moveToPreGraspOffset: Reached pre-grasp offset of %.3f m", offset_z);
   return true;
 }
 
@@ -280,13 +247,18 @@ cw2::openGripper()
 
 // ----------------------------------------------------------------------------
 bool
-cw2::lowerToObject(double delta_z)
+cw2::lowerToObject(const geometry_msgs::PointStamped &object_point)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+
+  ROS_INFO("Before: current_pose.z = %.3f, fingertip_offset = %.3f", 
+    current_pose.pose.position.z, fingertip_offset);
   
-  // Lower the arm by delta_z
-  current_pose.pose.position.z -= delta_z;
+  // Lower the arm (add margin for table height)
+  current_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.08;
+
+  ROS_INFO("After: current_pose.z = %.3f", current_pose.pose.position.z);
 
   // Create a waypoint vector for Cartesian path planning
   std::vector<geometry_msgs::Pose> waypoints;
@@ -348,78 +320,47 @@ cw2::liftObject(double delta_z)
   return true;
 }
 
-// ----------------------------------------------------------------------------
+// // ----------------------------------------------------------------------------
 bool
-cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point,
-                      double offset_z)
+cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
 {
+
+  // Get the current pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+  
   // Calculate pre-place pose
   geometry_msgs::PoseStamped pre_place_pose;
   pre_place_pose.header = goal_point.header;  
-  pre_place_pose.pose.position = goal_point.point;
-  pre_place_pose.pose.position.z = goal_point.point.z + offset_z;
-  pre_place_pose.pose.orientation = arm_group_.getCurrentPose().pose.orientation;
+  pre_place_pose.pose.position.x = goal_point.point.x;
+  pre_place_pose.pose.position.y = goal_point.point.y;
+  pre_place_pose.pose.orientation = current_pose.pose.orientation;
+
+  // Enforce high enough z to avoid collision with baskets
+  pre_place_pose.pose.position.z = std::max(goal_point.point.z + 0.33 + fingertip_offset,  // may be add object length
+                                            current_pose.pose.position.z);
+
+  // Set specific tolerances
+  arm_group_.setGoalJointTolerance(0.05);        // 0.05 rad (~3 deg) per joint
+  arm_group_.setGoalPositionTolerance(0.07);     // 60 mm 
+  arm_group_.setGoalOrientationTolerance(0.25);  // 0.1 rad (~14 deg)
 
   // Create a waypoint vector for CARTESIAN path planning
   std::vector<geometry_msgs::Pose> waypoints;
   waypoints.push_back(pre_place_pose.pose);
 
-  // Create constraints for JOINT-SPACE planning
-  // Position
-  moveit_msgs::Constraints constraints;
-  moveit_msgs::PositionConstraint pcm;
-  pcm.header.frame_id = "panda_link0";
-  pcm.link_name = arm_group_.getEndEffectorLink();
-  pcm.constraint_region.primitives.resize(1);
-  pcm.constraint_region.primitives[0].type = shape_msgs::SolidPrimitive::CYLINDER;
-  pcm.constraint_region.primitives[0].dimensions = {2.0, 1.0};  // Radius 2m, height 1m
-  pcm.constraint_region.primitive_poses.resize(1);
-  pcm.constraint_region.primitive_poses[0].position.z = 0.06;  // z = 60mm to avoid collision with basket
-  pcm.weight = 0.5;
-  // Orientation
-  moveit_msgs::OrientationConstraint ocm;
-  ocm.link_name = arm_group_.getEndEffectorLink();
-  ocm.header.frame_id = "panda_link0";
-  ocm.orientation = pre_place_pose.pose.orientation;
-  ocm.absolute_x_axis_tolerance = 0.2; 
-  ocm.absolute_y_axis_tolerance = 0.2;
-  ocm.absolute_z_axis_tolerance = M_PI;  
-  ocm.weight = 1.0;
-  constraints.orientation_constraints.push_back(ocm);
+  // Execute Cartesian path
+  if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
+    ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
+    
+    // Clear constraints
+    arm_group_.clearPathConstraints();
 
-  // Apply constraints
-  arm_group_.setPathConstraints(constraints);
+    // // Reset default tolerances 
+    // arm_group_.setGoalPositionTolerance(def_joint_tol);
+    // arm_group_.setGoalPositionTolerance(def_pos_tol);
 
-  // // Execute Cartesian path
-  // if (!planAndExecuteCartesian(waypoints, "moveToBasketOffset")) {
-  //   ROS_ERROR("moveToBasketOffset: Motion failed after multiple attempts.");
-  //   return false;
-  // }
-
-  // Try executing the Cartesian path
-  bool success = false;
-  if (planAndExecuteCartesian(waypoints, "moveToBasketOffset")) {
-      success = true;
-  } else {
-      // Fallback to joint-space planning
-      ROS_WARN("Cartesian planning failed, trying joint-space planning...");
-      arm_group_.setPoseTarget(pre_place_pose);
-      moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
-      if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-          success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-      }
+    return false;
   }
-
-  // Clear constraints
-  arm_group_.clearPathConstraints();
-
-  // Planning success
-  if (!success) {
-      ROS_ERROR("All planning attempts failed");
-      return false;
-  }
-  
-  // ROS_INFO("moveToBasketOffset: Reached pre-place offset of %.3f m", offset_z);
   return true;
 }
 
@@ -428,7 +369,7 @@ bool
 cw2::releaseObject()
 {
   ROS_INFO("releaseObject: Releasing object...");
-  double width = gripper_open_ + 0.02; 
+  double width = gripper_open_; 
   double eachJoint = width / 2.0;
 
   std::vector<double> gripperJointTargets(2, eachJoint);
@@ -445,13 +386,20 @@ cw2::releaseObject()
   return true;
 }
 
-
 ///////////////////////////////////////////////////////////////////////////////
-// Cartesian path planning helper functions with:
-// - multiple planning attempts with increasing step size
-// - multiple execution attempts with pose perturbation
-// - adaptive tolerance relaxation for difficult moves
-// - enhanced error handling and debugging output
+// Cartesian path planning
+
+/* 
+Approach:
+- multiple planning attempts with increasing step size
+- multiple execution attempts with pose perturbation
+- adaptive tolerance relaxation for difficult moves
+- enhanced error handling and debugging output
+
+Important parameters:
+- eef_step (EE step size); lower for smoother path, higher for faster planning but jerky motion & collision
+- path_fraction_threshold (minimum completion)
+*/
 
 bool
 cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
@@ -459,34 +407,33 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
 {
   moveit_msgs::RobotTrajectory trajectory;
   int max_planning_attempts = 10;
-  double eef_step = 0.1;       // Initial step size of 1cm for end effector (was 0.01 initally)
-  double jump_threshold = 0.0;  // Deprecated, but required by the current overload
+  double eef_step = 0.002;       // initial EE step size
+  double jump_threshold = 0.0; 
 
   // Outer loop: Try planning with increasingly larger step sizes
   for (int attempt = 1; attempt <= max_planning_attempts; attempt++) {
     
-    // Compute path and check if we achieved at least 90% of the requested path
+    // Calculate path
     ROS_INFO_STREAM(action_name << ": Planning attempt " << attempt << " with eef_step = " << eef_step);
     double fraction = arm_group_.computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
     
+    // Check if it completed at least 70%
     if (fraction >= 0.9) {
       ROS_INFO_STREAM(action_name << ": Cartesian path computed successfully with fraction " << fraction);
-      int max_exec_attempts = 3;
+      int max_exec_attempts = 10;
       
       // Inner loop: Try executing the planned path multiple times
       for (int exec = 1; exec <= max_exec_attempts; exec++) {
         moveit::planning_interface::MoveGroupInterface::Plan plan;
         plan.trajectory_ = trajectory;
 
-        // Attempt execution of the planned path
         if (arm_group_.execute(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
           ROS_INFO_STREAM(action_name << ": Execution succeeded on attempt " << exec);
           return true;
         } else {
           ROS_WARN_STREAM(action_name << ": Execution attempt " << exec << " failed.");
 
-          // If execution fails, try perturbing the final position slightly
-          // This can help overcome local minima in the motion planning
+          // If execution fails, try perturbing the final position (to overcome local minima)
           if (exec < max_exec_attempts && !waypoints.empty()) {
             geometry_msgs::Pose perturbed = waypoints.back();
             perturbed.position.x += 0.005;
@@ -504,31 +451,35 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
         }
       }
 
-      // If execution still fails, try lowering the tolerance parameters
-      ROS_WARN_STREAM(action_name << ": Execution failed after retries. Lowering tolerances...");
-      double original_pos_tol = arm_group_.getGoalPositionTolerance();
-      double original_orient_tol = arm_group_.getGoalOrientationTolerance();
+      // If execution still fails, increase tolerances
+      ROS_WARN_STREAM(action_name << ": Execution failed after retries. Increasing tolerances...");
+      double current_pos_tol = arm_group_.getGoalPositionTolerance();       
+      double current_orient_tol = arm_group_.getGoalOrientationTolerance();
+
+      ROS_INFO("Current tolerances: Pos=%.3fm, Orient=%.3frad", 
+        arm_group_.getGoalPositionTolerance(),
+        arm_group_.getGoalOrientationTolerance());
       
-      // Increase tolerances by 50%
-      arm_group_.setGoalJointTolerance(original_pos_tol * 1.5);
-      arm_group_.setGoalOrientationTolerance(original_orient_tol * 1.5);
+      arm_group_.setGoalJointTolerance(current_pos_tol * 1.3);           // increase by 30%
+      arm_group_.setGoalOrientationTolerance(current_orient_tol * 1.3);  // increase by 30%
       ROS_INFO_STREAM(action_name << ": Lowered tolerances to pos_tol = " 
-                      << arm_group_.getGoalPositionTolerance() << ", orient_tol = " 
+                      << arm_group_.getGoalPositionTolerance()
+                      << ", orient_tol = " 
                       << arm_group_.getGoalOrientationTolerance());
       
-      // Try one final execution with lower tolerances
+      // Try execution with increased tolerances
       moveit::planning_interface::MoveGroupInterface::Plan plan;
       plan.trajectory_ = trajectory;
       if (arm_group_.execute(plan) == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
         ROS_INFO_STREAM(action_name << ": Execution succeeded with lower tolerances.");
-        // Restore the original tolerances
-        arm_group_.setGoalJointTolerance(original_pos_tol);
-        arm_group_.setGoalOrientationTolerance(original_orient_tol);
+        // Reset the default tolerances
+        arm_group_.setGoalJointTolerance(def_pos_tol);
+        arm_group_.setGoalOrientationTolerance(def_pos_tol);
         return true;
       } else {
         ROS_ERROR_STREAM(action_name << ": Execution failed even with lower tolerances.");
-        arm_group_.setGoalJointTolerance(original_pos_tol);
-        arm_group_.setGoalOrientationTolerance(original_orient_tol);
+        arm_group_.setGoalJointTolerance(def_pos_tol);
+        arm_group_.setGoalOrientationTolerance(def_pos_tol);
       }
     } else {
       ROS_WARN_STREAM(action_name << ": Cartesian path planning achieved only " << (fraction * 100.0)
