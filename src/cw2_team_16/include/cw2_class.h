@@ -76,9 +76,6 @@ private:
 
   // Pick & place
   bool
-  // moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
-  //                     const std::string &shape_type,
-  //                     double offset_z);
   moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
                       const std::string &shape_type);
   bool
@@ -88,11 +85,11 @@ private:
   bool
   closeGripper();
   bool
-  liftObject(double delta_z);
+  liftObject(const geometry_msgs::PointStamped &goal_point);
   bool
-  // moveToBasketOffset(const geometry_msgs::PointStamped &goal_point,
-  //                   double offset_z);
   moveToBasketOffset(const geometry_msgs::PointStamped &goal_point);
+  bool
+  lowerToBasket(const geometry_msgs::PointStamped &goal_point);
   bool
   releaseObject();
 

@@ -101,7 +101,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 5. Move the arm to lift the object
   ROS_DEBUG("Lifting the object...");
-  if (!liftObject(0.3)) { 
+  if (!liftObject(goal_point)) { 
   ROS_ERROR("Failed to lift the object.");
   return true;
   }
@@ -115,7 +115,15 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Reached pre-place offset.");
 
-  // 7. Release object into the basket.
+  // 7. Lower the arm to safe release height (Optional)
+  ROS_DEBUG("Lowering arm to safe release height...");
+  if (!lowerToBasket(goal_point)) {  
+  ROS_ERROR("Failed to lower the arm.");
+  return true;
+  }
+  ROS_DEBUG("Reached safe release height.");
+
+  // 8. Release object into the basket.
   ROS_DEBUG("Releasing object into the basket...");
   if (!releaseObject()) {
   ROS_ERROR("Failed to release object.");
@@ -123,7 +131,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Object released successfully.");
 
-  // 8. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+  // 9. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
   arm_group_.stop();
   arm_group_.clearPoseTargets();
   arm_group_.setPlanningTime(20.0); 
@@ -172,11 +180,15 @@ bool
 cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
                           const std::string &shape_type)
 {
+  // Get the current arm pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+
   // Calculate pregrasp position
   geometry_msgs::PoseStamped pre_grasp_pose;
-  pre_grasp_pose.header = object_point.header;  // preserve frame_id (panda_link0)
+  pre_grasp_pose.header = object_point.header; 
   pre_grasp_pose.pose.position.x = object_point.point.x;
   pre_grasp_pose.pose.position.y = object_point.point.y;
+  pre_grasp_pose.pose.position.z = current_pose.pose.position.z;  // high enough when "ready"
 
   // Add x-y offset according to shape (grasping strategy)
   if (shape_type == "nought") {
@@ -185,13 +197,6 @@ cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
   else if (shape_type == "cross") {
     pre_grasp_pose.pose.position.x += 0.06;
   }
-
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-
-  // Enforce high enough z to avoid collisions (e.g. 2nd revolute link is at 0.33)
-  pre_grasp_pose.pose.position.z = std::max(object_point.point.z + 0.33 + fingertip_offset, 
-                                            current_pose.pose.position.z);
 
   // Calculate pregrasp orientation
   tf2::Quaternion q;
@@ -251,14 +256,9 @@ cw2::lowerToObject(const geometry_msgs::PointStamped &object_point)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-
-  ROS_INFO("Before: current_pose.z = %.3f, fingertip_offset = %.3f", 
-    current_pose.pose.position.z, fingertip_offset);
   
   // Lower the arm (add margin for table height)
   current_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.08;
-
-  ROS_INFO("After: current_pose.z = %.3f", current_pose.pose.position.z);
 
   // Create a waypoint vector for Cartesian path planning
   std::vector<geometry_msgs::Pose> waypoints;
@@ -298,13 +298,13 @@ cw2::closeGripper()
 
 // ----------------------------------------------------------------------------
 bool
-cw2::liftObject(double delta_z)
+cw2::liftObject(const geometry_msgs::PointStamped &goal_point)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-  
-  // Lift the arm by delta_z
-  current_pose.pose.position.z += delta_z;
+
+  // Lift the arm high enough to avoid collisions
+  current_pose.pose.position.z = goal_point.point.z + 0.33 + fingertip_offset + 0.20;
 
   // Create a waypoint vector for Cartesian path planning
   std::vector<geometry_msgs::Pose> waypoints;
@@ -333,11 +333,8 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
   pre_place_pose.header = goal_point.header;  
   pre_place_pose.pose.position.x = goal_point.point.x;
   pre_place_pose.pose.position.y = goal_point.point.y;
+  pre_place_pose.pose.position.z = current_pose.pose.position.z; 
   pre_place_pose.pose.orientation = current_pose.pose.orientation;
-
-  // Enforce high enough z to avoid collision with baskets
-  pre_place_pose.pose.position.z = std::max(goal_point.point.z + 0.33 + fingertip_offset,  // may be add object length
-                                            current_pose.pose.position.z);
 
   // Set specific tolerances
   arm_group_.setGoalJointTolerance(0.05);        // 0.05 rad (~3 deg) per joint
@@ -348,7 +345,7 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
   std::vector<geometry_msgs::Pose> waypoints;
   waypoints.push_back(pre_place_pose.pose);
 
-  // Execute Cartesian path
+  // Execute Cartesian paths
   if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
     ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
     
@@ -361,6 +358,30 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
 
     return false;
   }
+  return true;
+}
+
+// ----------------------------------------------------------------------------
+bool
+cw2::lowerToBasket(const geometry_msgs::PointStamped &goal_point)
+{
+  // Get the current arm pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+  
+  // Lower the arm to safe release position
+  current_pose.pose.position.z = goal_point.point.z + 0.05 + fingertip_offset + 0.25;
+
+  // Create a waypoint vector for Cartesian path planning
+  std::vector<geometry_msgs::Pose> waypoints;
+  waypoints.push_back(current_pose.pose);
+  
+  // Execute the Cartesian path
+  if (!planAndExecuteCartesian(waypoints, "lowerToBasket")) {
+    ROS_ERROR("lowerToBasket: Motion failed after multiple attempts.");
+    return false;
+  }
+  
+  ROS_INFO("lowertoBasket: Object can be safely released.");
   return true;
 }
 
