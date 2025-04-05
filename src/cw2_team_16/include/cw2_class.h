@@ -76,20 +76,23 @@ private:
 
   // Pick & place
   bool
+  // moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
+  //                     const std::string &shape_type,
+  //                     double offset_z);
   moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
-                      const std::string &shape_type,
-                      double offset_z);
+                      const std::string &shape_type);
   bool
   openGripper();
   bool
-  lowerToObject(double delta_z);
+  lowerToObject(const geometry_msgs::PointStamped &object_point);
   bool
   closeGripper();
   bool
   liftObject(double delta_z);
   bool
-  moveToBasketOffset(const geometry_msgs::PointStamped &goal_point,
-                    double offset_z);
+  // moveToBasketOffset(const geometry_msgs::PointStamped &goal_point,
+  //                   double offset_z);
+  moveToBasketOffset(const geometry_msgs::PointStamped &goal_point);
   bool
   releaseObject();
 
@@ -111,14 +114,21 @@ private:
   moveit::planning_interface::MoveGroupInterface hand_group_{"hand"};
   moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 
-  // Robot frames & pre-defined gripper widths
+  // Robot frames
   std::string base_frame_ = "panda_link0";
-  double gripper_open_ = 0.06;  // 60mm (max opening = 80mm -> check finger joints in hand.xacro)
-  double gripper_closed_ = 0.01; // 10mm
 
-  // Default pose
-  geometry_msgs::PoseStamped default_pose_;
+  // Gripper (dimensions in hand.xacro)
+  double gripper_open_ = 0.08;       // 80 mm 
+  double gripper_closed_ = 0.01;     // 10 mm
+  double fingertip_offset = 0.0584;  // 58.4 mm
 
+  // Home pose (when node starts)
+  geometry_msgs::PoseStamped home_pose_;
+
+  // Default goal tolerances
+  double def_joint_tol = 0.01;   // 0.01 rad (~0.6 deg) per joint
+  double def_pos_tol = 0.01;     // 10 mm
+  double def_orient_tol = 0.01;  // 0.01 rad 
 };
 
 #endif // end of include guard for cw2_CLASS_H_
