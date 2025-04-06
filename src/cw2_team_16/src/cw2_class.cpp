@@ -167,6 +167,157 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   cw2_world_spawner::Task3Service::Response &response)
 {
   /* function which should solve task 3 */
+  ros::Duration(5.0).sleep();
+
+  int cross_count = 0;
+  int nought_count = 0;
+  int black_count = 0;
+
+  obj_num = detected_objects.size();
+  
+  // 1. scan objects and basket  加入Q2的方法，判斷形狀(還要加入辨識顏色 colorFilter )
+  //   **還要加入辨識籃子位置跟障礙物位置**
+
+  // 2.print and count all detected objects 
+  for (size_t i = 0; i < obj_num; i++) {
+    const auto &obj = detected_objects[i];
+
+    ROS_INFO("Object -> Shape: %s | Color: %s | Center: (%.3f, %.3f)", 
+              obj.shape.c_str(), obj.color.c_str(), obj.center_x, obj.center_y);
+
+    if (obj.color == "black") {
+      black_count++;
+    } else if (obj.shape == "cross") {
+      cross_count++;
+    } else if (obj.shape == "nought") {
+      nought_count++;
+    }
+  }
+  ROS_INFO("Detected %d 'cross' objects, %d 'nought' objects, and %d 'black' obstacles.",
+    cross_count, nought_count, black_count);
+
+  // 3. Print the counts of each object type and find the most common object
+  std::vector<std::string> candidate_shapes;
+
+  if (cross_count > nought_count) {
+    candidate_shapes.push_back("cross");
+  } else if (nought_count > cross_count) {
+    candidate_shapes.push_back("nought");
+  } else if (cross_count == nought_count && cross_count > 0) {
+    ROS_WARN("Equal number of cross and nought. Considering both.");
+    candidate_shapes.push_back("cross");
+    candidate_shapes.push_back("nought");
+  } else {
+    ROS_ERROR("No valid cross or nought objects detected.");
+    return false;
+  }
+
+  // 找出「最接近機器人中心點的、具有最常見形狀、且不是黑色」的物件
+  // 4. pick one of the most common objects  (close to the camera center)
+  double min_distance = std::numeric_limits<double>::max();
+  int target_index = -1;  // -1 indicates no valid target found
+
+  if (obj.color == "black") continue;
+
+    // 若不在 candidate_shapes 中，跳過
+    if (std::find(candidate_shapes.begin(), candidate_shapes.end(), obj.shape) == candidate_shapes.end()) {
+      continue;
+    }
+
+    double distance = std::sqrt(std::pow(obj.center_x, 2) + std::pow(obj.center_y, 2));
+    if (distance < min_distance) {
+      min_distance = distance;
+      target_index = i;
+    }
+
+  if (target_index == -1) {
+    ROS_ERROR("No valid object of the most common shape found.");
+    return false;
+  }
+  // Print the target object information
+  const auto &target_obj = detected_objects[target_index];
+  ROS_INFO("Picking up the closest %s at (%.3f, %.3f)",
+           target_obj.shape.c_str(), target_obj.center_x, target_obj.center_y);
+
+
+  // TODO: 加入 Q1 移動到物件位置的邏輯
+  // 1. Move the arm to a pre-grasp offset
+  ROS_DEBUG("Moving to pre-grasp offset...");
+  if (!moveAboveObject(object_point, shape_type)) {
+  ROS_ERROR("Failed to move to pre-grasp offset.");
+  return true;
+  }
+  ROS_DEBUG("Reached pre-grasp offset.");
+
+  // 2. Open the gripper
+  ROS_DEBUG("Opening gripper...");
+  if (!openGripper()) {
+  ROS_ERROR("Failed to open gripper.");
+  return true;
+  }
+  ROS_DEBUG("Gripper opened successfully.");
+
+  // 3. Lower the arm to grasp position
+  ROS_DEBUG("Lowering arm to grasp the object...");
+  if (!lowerToObject(object_point)) {  
+  ROS_ERROR("Failed to lower to object.");
+  return true;
+  }
+  ROS_DEBUG("Reached grasp position.");
+
+  // 4. Close the gripper to grasp the object.
+  ROS_DEBUG("Closing gripper...");
+  if (!closeGripper()) {
+  ROS_ERROR("Failed to grasp the object.");
+  return true;
+  }
+  ROS_DEBUG("Object grasped successfully.");
+
+  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
+  // potentially placing nothing in the basket.
+
+  // 5. Move the arm to lift the object
+  ROS_DEBUG("Lifting the object...");
+  if (!liftObject(goal_point)) { 
+  ROS_ERROR("Failed to lift the object.");
+  return true;
+  }
+  ROS_DEBUG("Object lifted successfully.");
+
+  // 6. Move the arm to pre-place offset
+  ROS_DEBUG("Moving to pre-place offset...");
+  if (!moveToBasketOffset(goal_point)) {
+  ROS_ERROR("Failed to move to pre-place offset.");
+  return true;
+  }
+  ROS_DEBUG("Reached pre-place offset.");
+
+  // 7. Lower the arm to safe release height (Optional)
+  ROS_DEBUG("Lowering arm to safe release height...");
+  if (!lowerToBasket(goal_point)) {  
+  ROS_ERROR("Failed to lower the arm.");
+  return true;
+  }
+  ROS_DEBUG("Reached safe release height.");
+
+  // 8. Release object into the basket.
+  ROS_DEBUG("Releasing object into the basket...");
+  if (!releaseObject()) {
+  ROS_ERROR("Failed to release object.");
+  return true;
+  }
+  ROS_DEBUG("Object released successfully.");
+
+  // 9. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+  arm_group_.stop();
+  arm_group_.clearPoseTargets();
+  arm_group_.setPlanningTime(20.0); 
+  arm_group_.setNamedTarget("ready");
+  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+    ROS_INFO("Returned to 'ready' position successfully.");
+  } else {
+    ROS_WARN("Failed to move to 'ready' position.");
+  }
 
   ROS_INFO("The coursework solving callback for task 3 has been triggered");
 
@@ -440,6 +591,22 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
   double eef_step = 0.002;       // initial EE step size
   double jump_threshold = 0.0; 
 
+  //   -----------------------------
+  // create a new pose for the gripper
+  geometry_msgs::Pose gripper_pose;
+
+  // get the target object orientation and adjust the gripper orientation
+  if (!detectObjectOrientation(waypoints.back(), gripper_pose)) {
+    ROS_ERROR_STREAM(action_name << ": Unable to adjust gripper orientation.");
+    return false;
+  }
+
+  // update the gripper target position and orientation in the waypoints
+  std::vector<geometry_msgs::Pose> adjusted_waypoints = waypoints;
+  adjusted_waypoints.back() = gripper_pose;
+
+//   -----------------------------
+
   // Outer loop: Try planning with increasingly larger step sizes
   for (int attempt = 1; attempt <= max_planning_attempts; attempt++) {
     
@@ -450,6 +617,21 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
     // Check if it completed at least 70%
     if (fraction >= 0.9) {
       ROS_INFO_STREAM(action_name << ": Cartesian path computed successfully with fraction " << fraction);
+      
+  // ADD: Obstacle detection and object orientation check
+    if (detectObstacles(adjusted_waypoints.front(), adjusted_waypoints.back())) {
+      ROS_ERROR_STREAM(action_name << ": Obstacle detected in the planned path.");
+      return false;
+    }
+
+  if (!detectObjectOrientation(adjusted_waypoints.back(), gripper_pose)) {
+      ROS_ERROR_STREAM(action_name << ": Target object is out of range.");
+      return false;
+    }
+
+  // 避障檢查到這結束
+      
+      
       int max_exec_attempts = 10;
       
       // Inner loop: Try executing the planned path multiple times
@@ -523,3 +705,66 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
   ROS_ERROR_STREAM(action_name << ": All planning attempts failed.");
   return false;
 }
+
+//////////////////////////////////////////////////////////////////////////////////////
+
+// obstacles (black) detection and avoidance with octomap
+bool 
+cw2::detectObstacles(const geometry_msgs::Pose &start, const geometry_msgs::Pose &end) {
+    if (!octomap_client_.isConnected()) {
+      ROS_ERROR("Octomap client is not connected.");
+      return false;
+    }
+  
+    octomap::OcTree tree(octomap_client_.getOctomap());
+    octomap::point3d start_pt(start.position.x, start.position.y, start.position.z);
+    octomap::point3d end_pt(end.position.x, end.position.y, end.position.z);
+  
+    octomap::KeyRay ray;
+    if (tree.computeRayKeys(start_pt, end_pt, ray)) {
+      for (auto it = ray.begin(); it != ray.end(); ++it) {
+        octomap::OcTreeNode* node = tree.search(*it);
+        if (node && tree.isNodeOccupied(node)) {
+          ROS_WARN("Obstacle detected in the path.");
+          return true;
+        }
+      }
+    }
+  
+    return false;  // No obstacle
+  }
+
+// Detect target object orientation
+bool 
+cw2::detectObjectOrientation(const geometry_msgs::Pose &target_pose, geometry_msgs::Pose &gripper_pose) {
+    // get current robot pose
+    geometry_msgs::Pose current_pose = arm_group_.getCurrentPose().pose;
+
+    // calculate the target object's orientation
+    tf::Quaternion target_quat(
+        target_pose.orientation.x, 
+        target_pose.orientation.y, 
+        target_pose.orientation.z, 
+        target_pose.orientation.w
+    );
+
+    // set the gripper orientation to match the target object
+    tf::Quaternion gripper_quat = target_quat;
+
+    // ??????
+    tf::Quaternion rotation_90_deg;
+    rotation_90_deg.setRPY(0, 0, M_PI_2);  
+    gripper_quat = target_quat * rotation_90_deg;  
+
+    // transform quaternion to pose
+    gripper_pose.orientation.x = gripper_quat.x();
+    gripper_pose.orientation.y = gripper_quat.y();
+    gripper_pose.orientation.z = gripper_quat.z();
+    gripper_pose.orientation.w = gripper_quat.w();
+
+    // set gripper position to target position
+    gripper_pose.position = target_pose.position;
+
+    return true;
+}
+  
