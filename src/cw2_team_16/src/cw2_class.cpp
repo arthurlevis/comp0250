@@ -65,12 +65,12 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   //   goal_point.point.x, goal_point.point.y, goal_point.point.z);
   
   // 1. Move the arm to a pre-grasp offset
-  ROS_DEBUG("Moving to pre-grasp offset...");
-  if (!moveToPreGraspOffset(object_point, shape_type)) {
-  ROS_ERROR("Failed to move to pre-grasp offset.");
+  ROS_DEBUG("Moving above object...");
+  if (!moveAboveObject(object_point, shape_type)) {
+  ROS_ERROR("Failed to move above offset.");
   return true;
   }
-  ROS_DEBUG("Reached pre-grasp offset.");
+  ROS_DEBUG("Reached above object.");
 
   // 2. Open the gripper
   ROS_DEBUG("Opening gripper...");
@@ -81,7 +81,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   ROS_DEBUG("Gripper opened successfully.");
 
   // 3. Lower the arm to grasp position
-  ROS_DEBUG("Lowering arm to grasp the object...");
+  ROS_DEBUG("Lowering arm to object...");
   if (!lowerToObject(object_point)) {  
   ROS_ERROR("Failed to lower to object.");
   return true;
@@ -108,12 +108,12 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   ROS_DEBUG("Object lifted successfully.");
 
   // 6. Move the arm to pre-place offset
-  ROS_DEBUG("Moving to pre-place offset...");
-  if (!moveToBasketOffset(goal_point)) {
-  ROS_ERROR("Failed to move to pre-place offset.");
+  ROS_DEBUG("Moving above basket...");
+  if (!moveAboveBasket(goal_point, shape_type)) {
+  ROS_ERROR("Failed to move above basket.");
   return true;
   }
-  ROS_DEBUG("Reached pre-place offset.");
+  ROS_DEBUG("Reached above basket.");
 
   // 7. Lower the arm to safe release height (Optional)
   ROS_DEBUG("Lowering arm to safe release height...");
@@ -177,8 +177,8 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 // Pick & place helper functions
 
 bool
-cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
-                          const std::string &shape_type)
+cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
+                    const std::string &shape_type)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
@@ -190,7 +190,7 @@ cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
   pre_grasp_pose.pose.position.y = object_point.point.y;
   pre_grasp_pose.pose.position.z = current_pose.pose.position.z;  // high enough when "ready"
 
-  // Add x-y offset according to shape (grasping strategy)
+  // Add x-y offsets according to shape (grasping strategy)
   if (shape_type == "nought") {
     pre_grasp_pose.pose.position.y += 0.08;
   }
@@ -213,8 +213,8 @@ cw2::moveToPreGraspOffset(const geometry_msgs::PointStamped &object_point,
   waypoints.push_back(pre_grasp_pose.pose);
 
   // Execute Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
-    ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
+  if (!planAndExecuteCartesian(waypoints, "moveAboveObject")) {
+    ROS_ERROR("moveAboveObject: Motion failed after multiple attempts.");
     
     // Clear constraints
     arm_group_.clearPathConstraints();
@@ -322,7 +322,8 @@ cw2::liftObject(const geometry_msgs::PointStamped &goal_point)
 
 // // ----------------------------------------------------------------------------
 bool
-cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
+cw2::moveAboveBasket(const geometry_msgs::PointStamped &goal_point,
+                    const std::string &shape_type)
 {
 
   // Get the current pose
@@ -336,6 +337,14 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
   pre_place_pose.pose.position.z = current_pose.pose.position.z; 
   pre_place_pose.pose.orientation = current_pose.pose.orientation;
 
+  // Add x-y offsets to place object in centre of basket
+  if (shape_type == "nought") {
+    pre_place_pose.pose.position.y += 0.08;
+  }
+  else if (shape_type == "cross") {
+    pre_place_pose.pose.position.x += 0.06;
+  }
+
   // Set specific tolerances
   arm_group_.setGoalJointTolerance(0.05);        // 0.05 rad (~3 deg) per joint
   arm_group_.setGoalPositionTolerance(0.07);     // 60 mm 
@@ -346,8 +355,8 @@ cw2::moveToBasketOffset(const geometry_msgs::PointStamped &goal_point)
   waypoints.push_back(pre_place_pose.pose);
 
   // Execute Cartesian paths
-  if (!planAndExecuteCartesian(waypoints, "moveToPreGraspOffset")) {
-    ROS_ERROR("moveToPreGraspOffset: Motion failed after multiple attempts.");
+  if (!planAndExecuteCartesian(waypoints, "moveAboveBasket")) {
+    ROS_ERROR("moveAboveBasket: Motion failed after multiple attempts.");
     
     // Clear constraints
     arm_group_.clearPathConstraints();
