@@ -166,12 +166,15 @@ bool
 cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   cw2_world_spawner::Task3Service::Response &response)
 {
-  /* function which should solve task 3 */
+
+  ROS_INFO("Task 3 callback triggered.");
   ros::Duration(5.0).sleep();
 
   int cross_count = 0;
   int nought_count = 0;
   int black_count = 0;
+  int64 total_num_shapes = 0;
+  int64 num_most_common_shape = 0;
 
   obj_num = detected_objects.size();
   
@@ -196,21 +199,40 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   ROS_INFO("Detected %d 'cross' objects, %d 'nought' objects, and %d 'black' obstacles.",
     cross_count, nought_count, black_count);
 
+  total_num_shapes = cross_count + nought_count;
+  if (total_num_shapes == 0) {
+    ROS_ERROR("No valid objects detected.");
+    return false;
+  }
+  // Print the counts of each object type and find the most common object
+  ROS_INFO("Total objects detected: %d", total_num_shapes);
+
+
   // 3. Print the counts of each object type and find the most common object
   std::vector<std::string> candidate_shapes;
 
   if (cross_count > nought_count) {
     candidate_shapes.push_back("cross");
+    most_common_shape = cross_count;
   } else if (nought_count > cross_count) {
     candidate_shapes.push_back("nought");
+    most_common_shape = nought_count;
   } else if (cross_count == nought_count && cross_count > 0) {
     ROS_WARN("Equal number of cross and nought. Considering both.");
     candidate_shapes.push_back("cross");
     candidate_shapes.push_back("nought");
+    most_common_shape = cross_count+ nought_count;
   } else {
     ROS_ERROR("No valid cross or nought objects detected.");
     return false;
   }
+
+  ROS_INFO("Most common shape(s): %s", candidate_shapes[0].c_str());
+  if (candidate_shapes.size() > 1) {
+    ROS_INFO("Most common shape(s): %s and %s", candidate_shapes[0].c_str(), candidate_shapes[1].c_str());
+  }
+  ROS_INFO("Most common shape count: %d", most_common_shape);
+
 
   // 找出「最接近機器人中心點的、具有最常見形狀、且不是黑色」的物件
   // 4. pick one of the most common objects  (close to the camera center)
@@ -309,15 +331,15 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   ROS_DEBUG("Object released successfully.");
 
   // 9. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
-  arm_group_.stop();
-  arm_group_.clearPoseTargets();
-  arm_group_.setPlanningTime(20.0); 
-  arm_group_.setNamedTarget("ready");
-  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_INFO("Returned to 'ready' position successfully.");
-  } else {
-    ROS_WARN("Failed to move to 'ready' position.");
-  }
+  // arm_group_.stop();
+  // arm_group_.clearPoseTargets();
+  // arm_group_.setPlanningTime(20.0); 
+  // arm_group_.setNamedTarget("ready");
+  // if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+  //   ROS_INFO("Returned to 'ready' position successfully.");
+  // } else {
+  //   ROS_WARN("Failed to move to 'ready' position.");
+  // }
 
   ROS_INFO("The coursework solving callback for task 3 has been triggered");
 
@@ -595,12 +617,6 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
   // create a new pose for the gripper
   geometry_msgs::Pose gripper_pose;
 
-  // get the target object orientation and adjust the gripper orientation
-  if (!detectObjectOrientation(waypoints.back(), gripper_pose)) {
-    ROS_ERROR_STREAM(action_name << ": Unable to adjust gripper orientation.");
-    return false;
-  }
-
   // update the gripper target position and orientation in the waypoints
   std::vector<geometry_msgs::Pose> adjusted_waypoints = waypoints;
   adjusted_waypoints.back() = gripper_pose;
@@ -617,21 +633,6 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
     // Check if it completed at least 70%
     if (fraction >= 0.9) {
       ROS_INFO_STREAM(action_name << ": Cartesian path computed successfully with fraction " << fraction);
-      
-  // ADD: Obstacle detection and object orientation check
-    if (detectObstacles(adjusted_waypoints.front(), adjusted_waypoints.back())) {
-      ROS_ERROR_STREAM(action_name << ": Obstacle detected in the planned path.");
-      return false;
-    }
-
-  if (!detectObjectOrientation(adjusted_waypoints.back(), gripper_pose)) {
-      ROS_ERROR_STREAM(action_name << ": Target object is out of range.");
-      return false;
-    }
-
-  // 避障檢查到這結束
-      
-      
       int max_exec_attempts = 10;
       
       // Inner loop: Try executing the planned path multiple times
@@ -706,65 +707,5 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
   return false;
 }
 
-//////////////////////////////////////////////////////////////////////////////////////
 
-// obstacles (black) detection and avoidance with octomap
-bool 
-cw2::detectObstacles(const geometry_msgs::Pose &start, const geometry_msgs::Pose &end) {
-    if (!octomap_client_.isConnected()) {
-      ROS_ERROR("Octomap client is not connected.");
-      return false;
-    }
-  
-    octomap::OcTree tree(octomap_client_.getOctomap());
-    octomap::point3d start_pt(start.position.x, start.position.y, start.position.z);
-    octomap::point3d end_pt(end.position.x, end.position.y, end.position.z);
-  
-    octomap::KeyRay ray;
-    if (tree.computeRayKeys(start_pt, end_pt, ray)) {
-      for (auto it = ray.begin(); it != ray.end(); ++it) {
-        octomap::OcTreeNode* node = tree.search(*it);
-        if (node && tree.isNodeOccupied(node)) {
-          ROS_WARN("Obstacle detected in the path.");
-          return true;
-        }
-      }
-    }
-  
-    return false;  // No obstacle
-  }
-
-// Detect target object orientation
-bool 
-cw2::detectObjectOrientation(const geometry_msgs::Pose &target_pose, geometry_msgs::Pose &gripper_pose) {
-    // get current robot pose
-    geometry_msgs::Pose current_pose = arm_group_.getCurrentPose().pose;
-
-    // calculate the target object's orientation
-    tf::Quaternion target_quat(
-        target_pose.orientation.x, 
-        target_pose.orientation.y, 
-        target_pose.orientation.z, 
-        target_pose.orientation.w
-    );
-
-    // set the gripper orientation to match the target object
-    tf::Quaternion gripper_quat = target_quat;
-
-    // ??????
-    tf::Quaternion rotation_90_deg;
-    rotation_90_deg.setRPY(0, 0, M_PI_2);  
-    gripper_quat = target_quat * rotation_90_deg;  
-
-    // transform quaternion to pose
-    gripper_pose.orientation.x = gripper_quat.x();
-    gripper_pose.orientation.y = gripper_quat.y();
-    gripper_pose.orientation.z = gripper_quat.z();
-    gripper_pose.orientation.w = gripper_quat.w();
-
-    // set gripper position to target position
-    gripper_pose.position = target_pose.position;
-
-    return true;
-}
   
