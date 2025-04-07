@@ -436,6 +436,14 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     return false;
   }
 
+  // Print total number of shapes
+  ROS_INFO("Total number of shapes: %d", cross_count + nought_count);
+
+  // service response
+  response.success = true;
+  response.total_num_shapes = cross_count + nought_count;
+  response.num_most_common_shape = most_common_shape_count;
+
 
    // Step 3: Find closest object among candidate shapes
   double min_dist = std::numeric_limits<double>::max();
