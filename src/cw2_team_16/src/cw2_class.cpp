@@ -150,7 +150,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 1. Adjust gripper yaw angle
   ROS_DEBUG("Adjusting gripper's yaw...");
-  if (!adjustGripperYaw(yaw, shape_type)) {
+  if (!adjustGripperYaw(yaw)) {
   ROS_ERROR("Failed rotate gripper.");
   return true;
   }
@@ -823,8 +823,7 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
 
 // ----------------------------------------------------------------------------
 bool
-cw2::adjustGripperYaw(double yaw,
-                      const std::string &shape_type)
+cw2::adjustGripperYaw(double yaw)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
@@ -842,14 +841,6 @@ cw2::adjustGripperYaw(double yaw,
     return true; 
     }
 
-<<<<<<< HEAD
-=======
-  // // Add 45 degrees to yaw for crosses
-  // if (shape_type == "cross") {
-  //   yaw += M_PI/4;
-  // }
-
->>>>>>> 8240029ee3580f89132be0899709bd4fb928769a
   // Create new quaternion with same roll/pitch but new yaw
   tf2::Quaternion q_new;
   q_new.setRPY(roll, pitch, yaw); 
