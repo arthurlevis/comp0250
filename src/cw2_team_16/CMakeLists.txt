@@ -142,12 +142,6 @@ add_dependencies(${PROJECT_NAME}_cw2_class_lib
   ${catkin_EXPORTED_TARGETS}
 )
 
-target_link_libraries(${PROJECT_NAME}_cw2_class_lib
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-  ${OpenCV_LIBS}
-)
-
 # Declare a C++ executable
 # With catkin_make all packages are built within a single CMake context
 # The recommended prefix ensures that target names across packages don't collide
@@ -171,7 +165,8 @@ target_link_libraries(cw2_solution_node
   ${catkin_LIBRARIES}
   ${PROJECT_NAME}_cw2_class_lib
   ${PCL_INCLUDE_DIRS}
-  ${OpenCV_LIBS}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
 #############
