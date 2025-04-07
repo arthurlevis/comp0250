@@ -9,20 +9,17 @@ solution is contained within the cw2_team_<your_team_number> package */
 
 // system includes
 #include <ros/ros.h>
-// #include <std_msgs/String.h>
+#include <ros/package.h> 
+#include <std_msgs/String.h>
 #include <geometry_msgs/Pose.h>
-// #include <geometry_msgs/Point.h>
-// #include <geometry_msgs/Vector3.h>
-// #include <geometry_msgs/Quaternion.h>
-// #include <geometry_msgs/PoseStamped.h>
-// #include <geometry_msgs/PointStamped.h>
-
+#include <geometry_msgs/Point.h>
+#include <geometry_msgs/Vector3.h>
+#include <geometry_msgs/Quaternion.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PointStamped.h>
 #include <sstream>
 #include <iomanip>
 #include <Eigen/Dense>
-#include <opencv2/opencv.hpp>
-#include <ros/package.h>
-
 
 // include services from the spawner package 
 #include "cw2_world_spawner/Task1Service.h"
@@ -46,7 +43,6 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/passthrough.h>
-
 #include <pcl/common/transforms.h> 
 #include <pcl/search/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
@@ -60,6 +56,9 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <pcl/sample_consensus/model_types.h>
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/filters/statistical_outlier_removal.h>
+
+// OpenCV includes
+#include <opencv2/opencv.hpp>
 
 // aliases
 typedef pcl::PointXYZRGB PointT;
@@ -182,10 +181,7 @@ private:
   std::vector<std::vector<cv::Point>>
   extractContours(const cv::Mat &binaryImg);
   std::vector<cv::Point>
-  selectSegment(const std::vector<std::vector<cv::Point>> &contours,
-                // const geometry_msgs::PointStamped &object_point, 
-                const cv::Point &globalCenter,
-                const std::string &shape_type);
+  selectSegment(const std::vector<std::vector<cv::Point>> &contours);
 
   /* ----- class member VARIABLES ----- */
 
@@ -232,7 +228,7 @@ private:
   // Home pose (when node starts)
   geometry_msgs::PoseStamped home_pose_;
 
-  // Default goal tolerances
+  // MoveIt default goal tolerances
   double def_joint_tol = 0.01;   // 0.01 rad (~0.6 deg) per joint
   double def_pos_tol = 0.01;     // 10 mm
   double def_orient_tol = 0.01;  // 0.01 rad 

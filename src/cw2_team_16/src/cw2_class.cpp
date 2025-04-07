@@ -28,16 +28,17 @@ cw2::cw2(ros::NodeHandle nh):
   t3_service_  = nh_.advertiseService("/task3_start",
     &cw2::t3_callback, this);
   
-  // Set planning parameters
-  arm_group_.setPlanningTime(40.0);
-  arm_group_.setNumPlanningAttempts(2000);
-  arm_group_.allowReplanning(true);
+  // NEW: 
+  // MoveIt planning parameters (joint-space planning only)
+  arm_group_.setPlanningTime(60);            
+  arm_group_.setNumPlanningAttempts(2000); 
+  arm_group_.allowReplanning(true);           
 
-  // // Motion velocity
-  // arm_group_.setMaxVelocityScalingFactor(0.5);
-  // hand_group_.setMaxVelocityScalingFactor(0.5); 
+  // MoveIt execution parameters (both Cartesian & joint-space planning)
+  arm_group_.setMaxVelocityScalingFactor(0.5); 
+  hand_group_.setMaxVelocityScalingFactor(0.5); 
 
-  // Default goal tolerances
+  // Default goal tolerances (both Cartesian & joint-space planning)
   arm_group_.setGoalJointTolerance(def_joint_tol);        // 0.01 rad (~0.6 deg) per joint      
   arm_group_.setGoalPositionTolerance(def_pos_tol);       // 10 mm 
   arm_group_.setGoalOrientationTolerance(def_orient_tol); // 0.01 rad
@@ -45,7 +46,7 @@ cw2::cw2(ros::NodeHandle nh):
   // Home pose
   home_pose_ = arm_group_.getCurrentPose(); 
 
-  // initialize point cloud subscriber
+  // Initialize pointcloud subscriber & publisher
   pc_sub_ = nh_.subscribe<sensor_msgs::PointCloud2>(
     "/r200/camera/depth_registered/points", 1, &cw2::pointCloudCallback, this);
   g_pub_cloud = nh_.advertise<sensor_msgs::PointCloud2> ("cw2/filtered_cloud", 1, true);
@@ -68,12 +69,6 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   std::string shape_type = request.shape_type;
   geometry_msgs::PointStamped goal_point = request.goal_point;
 
-  // ROS_INFO("Object position: x=%.3f, y=%.3f, z=%.3f", 
-  //   object_point.point.x, object_point.point.y, object_point.point.z);
-  // ROS_INFO("Task 1: Shape type = %s", shape_type.c_str());
-  // ROS_INFO("Basket position: x=%.3f, y=%.3f, z=%.3f", 
-  //   goal_point.point.x, goal_point.point.y, goal_point.point.z);
-
   // ii. Lift arm to get larger FoV
   ROS_DEBUG("Lifting the arm...");
   if (!liftArm(object_point)) {
@@ -82,7 +77,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Lifted the arm.");
   
-  // iii. Move the arm to a pre-grasp offset
+  // iii. Move the arm to above the object
   ROS_DEBUG("Moving above object...");
   if (!moveAboveObject(object_point, shape_type)) {
   ROS_ERROR("Failed to move above offset.");
@@ -90,18 +85,16 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Reached above object.");
 
+  // Allow some time to process updated pointcloud
   ros::Duration(2.0).sleep(); 
-
-  // OPTIONAL: Update timestamp of object_point to now
   object_point.header.stamp = ros::Time::now();
-
-  // OPTIONAL: Wait for a few spins to ensure TF & point cloud updates are processed
   ros::spinOnce();
-  ros::Duration(0.1).sleep();
+  ros::Duration(0.2).sleep();
   ros::spinOnce();
-  ros::Duration(0.1).sleep();
+  ros::Duration(0.2).sleep();
 
-  // Calculate orientation from object cluster-------------------------------------
+  // --------------------------------------------------------------------------------
+  // Calculate orientation from object cluster
   
   // Convert the object point to a PoseStamped message
   geometry_msgs::PoseStamped object_pose = pointStampedToPoseStamped(object_point);
@@ -137,11 +130,8 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     globalCenter = cv::Point(binaryImg.cols/2, binaryImg.rows/2);
   ROS_INFO("Global center (image coordinates): [%d, %d]", globalCenter.x, globalCenter.y);
 
-  // Select shape segment
-  std::vector<cv::Point> armContour = selectSegment(contours,
-                                                    globalCenter,
-                                                    // object_point,
-                                                    shape_type);
+  // Select longest shape segment
+  std::vector<cv::Point> armContour = selectSegment(contours);
   if (armContour.empty()) {
     ROS_ERROR("No segment selected.");
     return false;
@@ -157,7 +147,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // Convert angle to radians
   double yaw = angle * CV_PI / 180.0;
-  // //----------------------------------------------------------------------------------
+  // --------------------------------------------------------------------------------
 
   // 1. Adjust gripper yaw angle
   ROS_DEBUG("Adjusting gripper's yaw...");
@@ -167,13 +157,13 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Gripper yaw adjusted successfully.");
 
-  // // 2. Adjust gripper x,y positions  // Work in Progress
-  // ROS_DEBUG("Adjusting gripper's XY...");
-  // if (!adjustGripperXY(shape_type, yaw)) {
-  // ROS_ERROR("Failed to move gripper.");
-  // return true;
-  // }
-  // ROS_DEBUG("Gripper XY adjusted successfully.");
+  // 2. Adjust gripper x,y positions  // Work in Progress
+  ROS_DEBUG("Adjusting gripper's XY...");
+  if (!adjustGripperXY(shape_type, yaw)) {
+  ROS_ERROR("Failed to move gripper.");
+  return true;
+  }
+  ROS_DEBUG("Gripper XY adjusted successfully.");
 
   // 3. Open the gripper
   ROS_DEBUG("Opening gripper...");
@@ -673,23 +663,23 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
 
-  // Define pregrasp pose
-  geometry_msgs::PoseStamped pre_grasp_pose;
-  pre_grasp_pose.header = object_point.header; 
+  // Define above_object_pose pose
+  geometry_msgs::PoseStamped above_object_pose;
+  above_object_pose.header = object_point.header; 
 
-  // Calculate pregrasp position
+  // Calculate position (centered about object)
 
   // // T1 ANY ORIENTATION = False
-  // pre_grasp_pose.pose.position.x = object_point.point.x;
-  // pre_grasp_pose.pose.position.y = object_point.point.y;
-  // pre_grasp_pose.pose.position.z = current_pose.pose.position.z;  // high enough when "ready"
+  // above_object_pose.pose.position.x = object_point.point.x;  // for grasping
+  // above_object_pose.pose.position.y = object_point.point.y;  // for grasping
+  // above_object_pose.pose.position.z = current_pose.pose.position.z;  // high enough when "ready"
 
   // Add x-y offsets according to shape (grasping strategy)
   // if (shape_type == "nought") {
-  //   pre_grasp_pose.pose.position.y += 0.08;
+  //   above_object_pose.pose.position.y += 0.08;
   // }
   // else if (shape_type == "cross") {
-  //   pre_grasp_pose.pose.position.x += 0.06;
+  //   above_object_pose.pose.position.x += 0.06;
   // }
 
   // T1 ANY ORIENTATION = True
@@ -709,18 +699,18 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
                                       ros::Duration(1.0));
 
     // Offset EE pose to center camera over object
-    pre_grasp_pose.pose.position.x = current_pose.pose.position.x + (object_point.point.x - camera_pose.pose.position.x);
-    pre_grasp_pose.pose.position.y = current_pose.pose.position.y + (object_point.point.y - camera_pose.pose.position.y);
-    pre_grasp_pose.pose.position.z = current_pose.pose.position.z;
+    above_object_pose.pose.position.x = current_pose.pose.position.x + (object_point.point.x - camera_pose.pose.position.x);
+    above_object_pose.pose.position.y = current_pose.pose.position.y + (object_point.point.y - camera_pose.pose.position.y);
+    above_object_pose.pose.position.z = current_pose.pose.position.z;
 
   } catch (tf2::TransformException &ex) {
     ROS_WARN("Failed to transform object point to camera frame: %s", ex.what());
   }
 
-  // Calculate pregrasp orientation
+  // Calculate orientation
   tf2::Quaternion q;
   q.setRPY(0.0, M_PI, M_PI_4 + M_PI_2);  // roll, pitch, yaw (top-down view)
-  pre_grasp_pose.pose.orientation = tf2::toMsg(q);
+  above_object_pose.pose.orientation = tf2::toMsg(q);
 
   // Set specific tolerances
   arm_group_.setGoalJointTolerance(0.05);       // 0.05 rad (~2.8 deg) per joint
@@ -729,19 +719,12 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
 
   // Create a waypoint vector
   std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(pre_grasp_pose.pose);
+  waypoints.push_back(above_object_pose.pose);
 
   // Execute Cartesian path
   if (!planAndExecuteCartesian(waypoints, "moveAboveObject")) {
     ROS_ERROR("moveAboveObject: Motion failed after multiple attempts.");
-    
-    // Clear constraints
-    arm_group_.clearPathConstraints();
-
-    // // Reset default tolerances (redundant, already reset in planAndExecuteCartesian helper)
-    // arm_group_.setGoalPositionTolerance(def_joint_tol);
-    // arm_group_.setGoalPositionTolerance(def_pos_tol);
-
+    // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   return true;
@@ -783,46 +766,47 @@ cw2::adjustGripperYaw(double yaw)
 }
 
 // ----------------------------------------------------------------------------
-// bool 
-// cw2::adjustGripperXY(const std::string &shape_type,
-//                     double yaw)
-// {
-//   // Get the current arm pose
-//   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+bool 
+cw2::adjustGripperXY(const std::string &shape_type,
+                    double yaw)
+{
+  // Get the current arm pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
 
-//   // Default offsets based on object type
-//   double x_offset = 0.0;
-//   double y_offset = 0.0;
+  // Default offsets
+  double x_offset = 0.0;
+  double y_offset = 0.0;
   
-//   // Set initial offsets based on shape type
-//   if (shape_type == "nought") {
-//     y_offset = 0.08;  // Original y offset for nought
-//   }
-//   else if (shape_type == "cross") {
-//     x_offset = 0.06;  // Original x offset for cross
-//   }
+  // Set initial offsets based on shape (grasping strategy)
+  if (shape_type == "nought") {
+    y_offset = 0.08;  
+  }
+  else if (shape_type == "cross") {
+    x_offset = 0.06;  
+  }
 
-//   // Rotate the offsets according to object's yaw
-//   double rotated_x_offset = x_offset * cos(yaw) - y_offset * sin(yaw);
-//   double rotated_y_offset = x_offset * sin(yaw) + y_offset * cos(yaw);
+  // Adjust x,y offsets to object's yaw
+  double rotated_x_offset = x_offset * cos(yaw) - y_offset * sin(yaw);
+  double rotated_y_offset = x_offset * sin(yaw) + y_offset * cos(yaw);
   
-//   // Apply rotated offsets to current pose
-//   current_pose.pose.position.x += rotated_x_offset;
-//   current_pose.pose.position.y += rotated_y_offset;
+  // Apply rotated offsets to current pose
+  current_pose.pose.position.x += rotated_x_offset;
+  current_pose.pose.position.y += rotated_y_offset;
 
-//   // Create a waypoint vector for Cartesian path planning
-//   std::vector<geometry_msgs::Pose> waypoints;
-//   waypoints.push_back(current_pose.pose);
+  // Create a waypoint vector for Cartesian path planning
+  std::vector<geometry_msgs::Pose> waypoints;
+  waypoints.push_back(current_pose.pose);
   
-//   // Execute the Cartesian path
-//   if (!planAndExecuteCartesian(waypoints, "adjustGripperXY")) {
-//     ROS_ERROR("adjustGripperXY: Motion failed after multiple attempts.");
-//     return false;
-//   }
+  // Execute the Cartesian path
+  if (!planAndExecuteCartesian(waypoints, "adjustGripperXY")) {
+    ROS_ERROR("adjustGripperXY: Motion failed after multiple attempts.");
+    // No need to reset default parameters & tolerances (already reset in helper)
+    return false;
+  }
   
-//   ROS_INFO("adjustGripperXY: Adjusted gripper's x,y positions.");
-//   return true;
-// }
+  ROS_INFO("adjustGripperXY: Adjusted gripper's x,y positions.");
+  return true;
+}
 
 // ----------------------------------------------------------------------------
 bool
@@ -863,6 +847,7 @@ cw2::lowerToObject(const geometry_msgs::PointStamped &object_point)
   // Execute the Cartesian path
   if (!planAndExecuteCartesian(waypoints, "lowerToObject")) {
     ROS_ERROR("lowerToObject: Motion failed after multiple attempts.");
+    // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   
@@ -909,6 +894,7 @@ cw2::liftObject(const geometry_msgs::PointStamped &goal_point)
   // Execute the Cartesian path
   if (!planAndExecuteCartesian(waypoints, "raiseFromObject")) {
     ROS_ERROR("raiseFromObject: Motion failed after multiple attempts.");
+    // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   
@@ -933,7 +919,8 @@ cw2::moveAboveBasket(const geometry_msgs::PointStamped &goal_point,
   pre_place_pose.pose.position.z = current_pose.pose.position.z; 
   pre_place_pose.pose.orientation = current_pose.pose.orientation;
 
-  // // Add x-y offsets to place object in centre of basket  // only works for T1 ANY ORIENTATION = False
+  // // T1 ANY ORIENTATION = False
+  // // Add x-y offsets to place object in centre of basket
   // if (shape_type == "nought") {
   //   pre_place_pose.pose.position.y += 0.08;
   // }
@@ -953,14 +940,7 @@ cw2::moveAboveBasket(const geometry_msgs::PointStamped &goal_point,
   // Execute Cartesian paths
   if (!planAndExecuteCartesian(waypoints, "moveAboveBasket")) {
     ROS_ERROR("moveAboveBasket: Motion failed after multiple attempts.");
-    
-    // Clear constraints
-    arm_group_.clearPathConstraints();
-
-    // // Reset default tolerances 
-    // arm_group_.setGoalPositionTolerance(def_joint_tol);
-    // arm_group_.setGoalPositionTolerance(def_pos_tol);
-
+    // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   return true;
@@ -983,6 +963,7 @@ cw2::lowerToBasket(const geometry_msgs::PointStamped &goal_point)
   // Execute the Cartesian path
   if (!planAndExecuteCartesian(waypoints, "lowerToBasket")) {
     ROS_ERROR("lowerToBasket: Motion failed after multiple attempts.");
+    // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   
@@ -1029,19 +1010,17 @@ Important parameters:
 
 bool
 cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
-                          const std::string &action_name)
+                            const std::string &action_name)
 {
   moveit_msgs::RobotTrajectory trajectory;
   int max_planning_attempts = 10;
   double eef_step = 0.002;       // initial EE step size
-  // double jump_threshold = 0.0; 
 
   // Outer loop: Try planning with increasingly larger step sizes
   for (int attempt = 1; attempt <= max_planning_attempts; attempt++) {
     
     // Calculate path
     ROS_INFO_STREAM(action_name << ": Planning attempt " << attempt << " with eef_step = " << eef_step);
-    // double fraction = arm_group_.computeCartesianPath(waypoints, eef_step, jump_threshold, trajectory);
     moveit_msgs::MoveItErrorCodes error_code;
     double fraction = arm_group_.computeCartesianPath(waypoints,      
                                                       eef_step,       // step size between waypoints
@@ -1076,14 +1055,12 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
             // Recompute path with perturbed endpoint
             std::vector<geometry_msgs::Pose> perturbed_waypoints = waypoints;
             perturbed_waypoints.back() = perturbed;
-            // fraction = arm_group_.computeCartesianPath(perturbed_waypoints, eef_step, jump_threshold, trajectory);
             moveit_msgs::MoveItErrorCodes error_code;
             double fraction = arm_group_.computeCartesianPath(perturbed_waypoints,      
                                                               eef_step,       
                                                               trajectory,     
                                                               true,          
                                                               &error_code);   
-
             if (fraction < 0.9)
               ROS_WARN_STREAM(action_name << ": Perturbed path computation only achieved fraction " << fraction);
           }
@@ -1140,8 +1117,9 @@ cw2::pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt)
 {
   geometry_msgs::PoseStamped pose;
   pose.header = pt.header;              
-  pose.pose.position = pt.point;        
-  // Set default orientation 
+  pose.pose.position = pt.point;    
+
+  // Assign default orientation 
   pose.pose.orientation.x = 0.0;
   pose.pose.orientation.y = 0.0;
   pose.pose.orientation.z = 0.0;
@@ -1161,11 +1139,11 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   // Count number of points
   ROS_INFO("Input cloud has %lu points", cloud_ptr_->points.size());
 
-  // Print point cloud bounds using Eigen vectors
-  Eigen::Vector4f min_pt, max_pt;
-  pcl::getMinMax3D(*cloud_ptr_, min_pt, max_pt);
-  ROS_INFO("Cloud bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
-          min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
+  // // Debug: Check object pointcloud dimensions using Eigen vectors
+  // Eigen::Vector4f min_pt, max_pt;
+  // pcl::getMinMax3D(*cloud_ptr_, min_pt, max_pt);
+  // ROS_INFO("Cloud bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
+  //         min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
 
   // Create a new point cloud for the cluster
   pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cluster(
@@ -1175,7 +1153,7 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   const double GRID_CELL_SIZE = 0.04;  // 40 mm
   const double TOTAL_SIZE = 0.2;       // 200 mm
   const double HEIGHT = 0.04;          // 40 mm
-  const double MARGIN = 0.05;          // 
+  const double MARGIN = 0.04;          // allow 40 mm margin
 
   // Transform object_point to camera frame
   geometry_msgs::PointStamped object_cam_frame;
@@ -1194,10 +1172,7 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   double center_y = object_cam_frame.point.y;
   double center_z = object_cam_frame.point.z;
 
-  ROS_INFO("Filtering around point: [%.3f, %.3f, %.3f]", 
-           center_x, center_y, center_z);
-
-  // Filter X axis with debug output
+  // Filter x-axis
   pcl::PassThrough<pcl::PointXYZRGBA> pass;
   pass.setInputCloud(cloud_ptr_);
   pass.setFilterFieldName("x");
@@ -1207,7 +1182,7 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   pass.filter(*cluster);
   ROS_INFO("After X filter [%.3f, %.3f]: %lu points", x_min, x_max, cluster->points.size());
 
-  // Filter Y axis with debug output
+  // Filter y-axis
   pass.setInputCloud(cluster);
   pass.setFilterFieldName("y");
   double y_min = center_y - (TOTAL_SIZE/2 + MARGIN);
@@ -1216,24 +1191,24 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   pass.filter(*cluster);
   ROS_INFO("After Y filter [%.3f, %.3f]: %lu points", y_min, y_max, cluster->points.size());
 
-  // Filter Z axis with debug output
+  // Filter z-axis
   pass.setInputCloud(cluster);
   pass.setFilterFieldName("z");
-  double z_max = 0.70;   // camera z position in base frame is 5cm lower than EE (at 0.75)
-  double z_min = 0.64;   // object height = 40 mm
+  double z_max = 0.70;   // camera z-position in base frame = 5cm lower than EE (lifted at 0.75)
+  double z_min = 0.64;   // object height = 40 mm (add 20 mm margin)
   pass.setFilterLimits(z_min, z_max);
   pass.filter(*cluster);
   ROS_INFO("After Z filter [%.3f, %.3f]: %lu points", z_min, z_max, cluster->points.size());
 
-  if (cluster->points.size() < 10) {  // Minimum points threshold
+  if (cluster->points.size() < 50) {  // Minimum points threshold
       ROS_WARN("Too few points in cluster.");
       return nullptr;
   }
 
-  // Debug output for resulting cluster bounds
-  pcl::getMinMax3D(*cluster, min_pt, max_pt);
-  ROS_INFO("Filtered cluster bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
-           min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
+  // // Debug output for resulting cluster bounds
+  // pcl::getMinMax3D(*cluster, min_pt, max_pt);
+  // ROS_INFO("Filtered cluster bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
+  //          min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
 
   return cluster;
 }
@@ -1257,28 +1232,27 @@ cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster
   int img_width  = static_cast<int>(std::ceil((max_pt[0] - min_pt[0]) / resolution));
   int img_height = static_cast<int>(std::ceil((max_pt[1] - min_pt[1]) / resolution));
 
-  // Create a blank (black) image (8-bit grayscale)
-  cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);
+  // Create a blank image (8-bit grayscale)
+  cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);  
 
-  // For each point, determine pixel coordinate and set it to white
+  // Determine coordinates of each cluster point
   for (const auto &pt : cluster->points)
   {
-    // Project the 3D point onto XY (we ignore z)
+    // Project the 3D point into 2D (x-y plane)
     int u = static_cast<int>((pt.x - min_pt[0]) / resolution);
     int v = static_cast<int>((pt.y - min_pt[1]) / resolution);
     
     // Ensure the coordinates are within image bounds
     if (u >= 0 && u < img_width && v >= 0 && v < img_height)
     {
-      // binaryImg.at<uchar>(img_height - 1 - v, u) = 255; // flip vertically for visualization consistency
       binaryImg.at<uchar>(v, u) = 255;
     }
   }
 
-  // Debug
-  std::string package_path = ros::package::getPath("cw2_team_16");
-  cv::imwrite(package_path + "/src/binary.png", binaryImg);
-  ROS_INFO("Saved binary image");
+  // // Debug: check image orientation is the same than camera's top-down view
+  // std::string package_path = ros::package::getPath("cw2_team_16");
+  // cv::imwrite(package_path + "/src/binary.png", binaryImg);
+  // ROS_INFO("Saved binary image");
   
   return binaryImg;
 }
@@ -1287,57 +1261,48 @@ cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster
 std::vector<std::vector<cv::Point>>
 cw2::extractContours(const cv::Mat &binaryImg)
 {
-    // Invert the binary image so black shapes become white
+    // Invert the binary image to extract contours more easily
     cv::Mat inverted;
     cv::bitwise_not(binaryImg, inverted);
 
-    // Find contours on the inverted image
+    // Find contours
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(inverted, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    // // NEW:
+    // // Debug: check contours
+    // std::string package_path = ros::package::getPath("cw2_team_16");
+    // cv::Mat ContoursImg;
+    // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
+    // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,0,255), 2);
+    // cv::imwrite(package_path + "/src/contours.png", ContoursImg);
+    // ROS_INFO("Saved image with contours");
 
     return contours;
 }
 
 // ----------------------------------------------------------------------------
 std::vector<cv::Point>
-cw2::selectSegment(const std::vector<std::vector<cv::Point>> &contours,
-                  const cv::Point &globalCenter,
-                  // const geometry_msgs::PointStamped &object_point,  // instead of cv::Point &globalCenter
-                  const std::string &shape_type)
+cw2::selectSegment(const std::vector<std::vector<cv::Point>> &contours)
 {
 double bestLength = 0;
 std::vector<cv::Point> bestContour;
 
+// Find longest segment
 for (const auto &contour : contours)
 {
   cv::Moments m = cv::moments(contour);
   if (m.m00 <= 0) continue;
 
-  cv::Point contourCenter(static_cast<int>(m.m10 / m.m00), static_cast<int>(m.m01 / m.m00));
+  // Fit a rotated rectangle to measure length
+  cv::RotatedRect box = cv::minAreaRect(contour);
+  float length = std::max(box.size.width, box.size.height);
 
-  // // Apply shape-specific filtering
-  // bool isCandidate = false;
-  // if (shape_type == "cross") {
-  //     isCandidate = (contourCenter.x > globalCenter.x && contourCenter.y < globalCenter.y);
-  //     // isCandidate = (contourCenter.x > object_point.point.x && contourCenter.y < object_point.point.y);
-  // } else {
-  //   isCandidate = true;
-  // }
-
-  bool isCandidate = true;  // no shape-specific filtering
-
-  if (isCandidate)
+  if (length > bestLength)
   {
-    // Fit a rotated rectangle to measure length
-    cv::RotatedRect box = cv::minAreaRect(contour);
-    float length = std::max(box.size.width, box.size.height);
-
-    if (length > bestLength)
-    {
-      bestLength = length;
-      bestContour = contour;
+    bestLength = length;
+    bestContour = contour;
     }
-  }
 }
 
 return bestContour;
