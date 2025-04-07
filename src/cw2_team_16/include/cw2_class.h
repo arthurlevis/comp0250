@@ -197,24 +197,20 @@ private:
   moveit::planning_interface::MoveGroupInterface hand_group_{"hand"};
   moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 
-  // This part might be conflicts
   // Pointcloud
-  ros::Subscriber pcl_sub_;  // subscriber listening for pointcloud                  
+  ros::Subscriber pc_sub_;  // subscriber listening for pointcloud                  
   pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr_;  // pointer to pointcloud in PCL format
 
-  ros::Subscriber pc_sub_; 
   pcl::PCLPointCloud2 g_pcl_pc;
   PointCPtr g_cloud_ptr;
-  //
-
-
-  tf2_ros::Buffer tf_buffer_;
-  tf2_ros::TransformListener tf_listener_;
 
   ros::Publisher g_pub_cloud;
   PointCPtr g_cloud_filtered;
   sensor_msgs::PointCloud2 g_cloud_filtered_msg;
 
+  // TF2
+  tf2_ros::Buffer tf_buffer_;
+  tf2_ros::TransformListener tf_listener_;
 
   // Reference frames
   std::string base_frame_ = "panda_link0";  // robot base
