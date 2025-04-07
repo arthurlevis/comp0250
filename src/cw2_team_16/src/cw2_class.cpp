@@ -248,47 +248,19 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   /* function which should solve task 2 */
 
   ROS_INFO("The coursework solving callback for task 2 has been triggered");
-
-  // === Step 1: Inspect the reference object ===
-
   // Define the reference and mystery object poses
   geometry_msgs::PoseStamped reference_pose;
   geometry_msgs::PoseStamped mystery_pose;
   const auto& ref_points = request.ref_object_points;
   reference_pose.pose.position = ref_points[0].point;
-
-  // Move to the top of the reference object
-  reference_pose.pose.position.z += 0.6; // Adjust height
-  moveToPoseWithFallback(reference_pose);
-
-  // Wait for the robot to stabilize
-  ros::Duration(2.0).sleep();
-
-  // Filter the point cloud to remove color other than red , blue, and purple
-  colorFilter(g_cloud_ptr, g_cloud_filtered);
-
-  // Segment the point cloud into objects
-  std::vector<PointCPtr> clusters;
-  merged_objects.clear();
-  segmentObjectsWithOpenCV(g_cloud_filtered, clusters);
-  updateMergedObjectsFromSingleView(clusters);
-  mergeNearbyMergedObjectsWithPriorityVoting();
-
-  // Check if any objects were detected
-  if (merged_objects.empty()) {
-    ROS_ERROR("No object detected at reference point.");
-    return true;
-  }
-
-  // Print the detected objects (DEBUG)
-  std::string ref_shape = merged_objects.front().shape;
-  ROS_INFO("Reference object shape: %s", ref_shape.c_str());
-
-  // === Step 2: Inspect the mystery object ===
-
-  // Move to the top of mystery object pose
   mystery_pose.pose.position = request.mystery_object_point.point;
   mystery_pose.pose.position.z += 0.6; // Adjust height
+  reference_pose.pose.position.z += 0.6; // Adjust height
+  std::vector<PointCPtr> clusters;
+
+  // === Step 1: Inspect the mystery object ===
+
+  // Move to the top of mystery object pose
   moveToPoseWithFallback(mystery_pose);
 
   // Wait for the robot to stabilize
@@ -315,6 +287,34 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   std::string mystery_shape = merged_objects.front().shape;
   ROS_INFO("Mystery object shape: %s", mystery_shape.c_str());
 
+  // === Step 2: Inspect the reference object ===
+
+  // Move to the top of the reference object
+  moveToPoseWithFallback(reference_pose);
+
+  // Wait for the robot to stabilize
+  ros::Duration(2.0).sleep();
+
+  // Filter the point cloud to remove color other than red , blue, and purple
+  colorFilter(g_cloud_ptr, g_cloud_filtered);
+
+  // Segment the point cloud into objects
+  merged_objects.clear();
+  segmentObjectsWithOpenCV(g_cloud_filtered, clusters);
+  updateMergedObjectsFromSingleView(clusters);
+  mergeNearbyMergedObjectsWithPriorityVoting();
+
+  // Check if any objects were detected
+  if (merged_objects.empty()) {
+    ROS_ERROR("No object detected at reference point.");
+    return true;
+  }
+
+  // Print the detected objects (DEBUG)
+  std::string ref_shape = merged_objects.front().shape;
+  ROS_INFO("Reference object shape: %s", ref_shape.c_str());
+
+
   // === Step 3: Map mystery shape to index
   if (mystery_shape == "nought") {
     response.mystery_object_num = (ref_shape == "nought") ? 1 : 2;
@@ -325,6 +325,8 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   }
 
   ROS_INFO("Final mystery_object_num = %ld", response.mystery_object_num);
+
+  //TODO: Go back to the home position
 
   return true;
 }
@@ -440,7 +442,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   ROS_INFO("Total number of shapes: %d", cross_count + nought_count);
 
   // service response
-  response.success = true;
+  // response.success = true;
   response.total_num_shapes = cross_count + nought_count;
   response.num_most_common_shape = most_common_shape_count;
 
