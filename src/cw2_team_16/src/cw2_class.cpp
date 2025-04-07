@@ -1805,7 +1805,8 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
       shape = "obstacle";
     }
     else {
-      shape = classifyObjectByPointCount(clusters[i]->points.size());
+      float estimated_size = 0.0f;
+      shape = classifyShapeWithOpenCV(clusters[i], estimated_size);
     }
 
     // Check if it matches an existing merged object
@@ -1943,4 +1944,66 @@ cw2::finalizeVotingResults() {
                     << " | Center: (" << std::fixed << std::setprecision(3)
                     << obj.center_x << ", " << obj.center_y << ")");
   }
+}
+
+std::string
+cw2::classifyShapeWithOpenCV(PointCPtr cluster_cloud, float &estimated_x_mm) {
+if (!cluster_cloud || cluster_cloud->empty()) {
+estimated_x_mm = 0;
+return "unknown";
+}
+
+ROS_INFO("Classifying shape with OpenCV...");
+
+// ==== Step 1: Compute bounding box (2D) ====
+float min_x = FLT_MAX, max_x = -FLT_MAX;
+float min_y = FLT_MAX, max_y = -FLT_MAX;
+for (const auto &pt : cluster_cloud->points) {
+min_x = std::min(min_x, pt.x);
+max_x = std::max(max_x, pt.x);
+min_y = std::min(min_y, pt.y);
+max_y = std::max(max_y, pt.y);
+}
+
+float roi_width = max_x - min_x;
+float roi_height = max_y - min_y;
+float roi_span = std::max(roi_width, roi_height);
+estimated_x_mm = (roi_span * 1000.0f) / 5.0f; // x = span / 5
+
+const int img_size = 100;
+const float scale = img_size / roi_span;
+
+// ==== Step 2: Project cluster to binary image ====
+cv::Mat image = cv::Mat::zeros(img_size, img_size, CV_8UC1);
+
+for (const auto &pt : cluster_cloud->points) {
+int px = static_cast<int>((pt.x - min_x) * scale);
+int py = static_cast<int>((pt.y - min_y) * scale);
+if (px >= 0 && px < img_size && py >= 0 && py < img_size) {
+image.at<uchar>(py, px) = 255;
+}
+}
+
+// ==== Step 3: Compute fill ratio ====
+float fill_ratio = static_cast<float>(cv::countNonZero(image)) / (img_size * img_size);
+
+// ==== Step 4: Classify based on fill ratio ====
+std::string shape;
+if (fill_ratio > 0.5f) shape = "nought";
+else if (fill_ratio > 0.2f) shape = "cross";
+else shape = "unknown";
+
+// ==== Step 5: Round estimated x ====
+float x_vals[] = {20.0f, 30.0f, 40.0f};
+float min_diff = FLT_MAX;
+for (float x : x_vals) {
+if (std::abs(x - estimated_x_mm) < min_diff) {
+min_diff = std::abs(x - estimated_x_mm);
+estimated_x_mm = x;
+}
+}
+ROS_INFO_STREAM("Shape: " << shape
+<< " | Estimated size: " << estimated_x_mm << " mm"
+<< " | Fill ratio: " << fill_ratio);
+return shape;
 }
