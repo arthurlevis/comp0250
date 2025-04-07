@@ -124,6 +124,7 @@ public:
   void updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters);
   void finalizeVotingResults();
   void mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold = 0.09);
+  std::string classifyShapeWithOpenCV(PointCPtr cluster_cloud, float &estimated_x_mm);
 
 private:
 
