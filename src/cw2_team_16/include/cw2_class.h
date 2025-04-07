@@ -141,7 +141,8 @@ private:
   bool
   adjustGripperYaw(double yaw); 
   bool
-  adjustGripperXY(const std::string &shape_type,
+  adjustGripperXY(const geometry_msgs::PointStamped &object_point,
+                  const std::string &shape_type,
                   double yaw);
   bool
   openGripper();

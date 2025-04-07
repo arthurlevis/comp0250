@@ -150,7 +150,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 1. Adjust gripper yaw angle
   ROS_DEBUG("Adjusting gripper's yaw...");
-  if (!adjustGripperYaw(yaw, shape_type)) {
+  if (!adjustGripperYaw(yaw)) {
   ROS_ERROR("Failed rotate gripper.");
   return true;
   }
@@ -335,7 +335,27 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 
   ROS_INFO("Final mystery_object_num = %ld", response.mystery_object_num);
 
-  //TODO: Go back to the home position
+    // 10. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+    arm_group_.setMaxVelocityScalingFactor(1); 
+    hand_group_.setMaxVelocityScalingFactor(1); 
+    arm_group_.setGoalJointTolerance(0.05);     
+    arm_group_.setGoalPositionTolerance(0.03);   
+    arm_group_.setGoalOrientationTolerance(0.05);
+    arm_group_.stop();
+    arm_group_.clearPoseTargets();
+    arm_group_.setNamedTarget("ready");
+    if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+      ROS_INFO("Returned to 'ready' position successfully.");
+    } else {
+      ROS_WARN("Failed to move to 'ready' position.");
+    }
+    arm_group_.setMaxVelocityScalingFactor(0.5); 
+    hand_group_.setMaxVelocityScalingFactor(0.5); 
+    arm_group_.setGoalJointTolerance(def_joint_tol);  
+    arm_group_.setGoalPositionTolerance(def_pos_tol);            
+    arm_group_.setGoalOrientationTolerance(def_orient_tol);
+  
+    ROS_INFO("Task 2 completed successfully.");
 
   return true;
 }
@@ -350,14 +370,17 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   ROS_INFO("The coursework solving callback for task 3 has been triggered");
 
-  // 1. scan objects and basket
+  // Get current arm pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+
+  // 1. Scan objects & basket
   std::vector<geometry_msgs::PoseStamped> camera_view_poses;
   geometry_msgs::PoseStamped pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8;
   
   // === Viewpoint 1: Bottom Right ===
   pose1.pose.position.x = 0.468;
   pose1.pose.position.y = 0.265;
-  pose1.pose.position.z = 0.603;
+  pose1.pose.position.z = current_pose.pose.position.z;
 
   // === Viewpoint 2: Bottom Center ===
   pose2 = pose1;
@@ -476,7 +499,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     return false;
   }
 
-  // Step 4: Find the basket (only keep the one with most points)
+  // Step 4: Find the basket (one with most points in the cloud)
   const MultiViewObject* basket_obj = nullptr;
   int max_basket_points = -1;
 
@@ -504,139 +527,196 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
            target->center_x, target->center_y);
   ROS_INFO("Basket position: (%.3f, %.3f)", basket_obj->center_x, basket_obj->center_y);
 
-  // Step 5: Move to the target object
+  // Step 5: Move above target object
+
+  // Pick point (~object point)
   geometry_msgs::PointStamped pick_point;
-  pick_point.point.x = target->center_x - 0.045; // This offset is important
+  pick_point.header.frame_id = base_frame_;
+  pick_point.point.x = target->center_x - 0.045; // manual offset between actual & observed coordinate
   pick_point.point.y = target->center_y;
-  pick_point.point.z = 0.4; // TODO: change
+  pick_point.point.z = 0.0;
 
+  // Drop point (~goal point)
   geometry_msgs::PointStamped drop_point;
-  drop_point.point.x = basket_obj->center_x - 0.045; // This offset is important
+  drop_point.header.frame_id = base_frame_;
+  drop_point.point.x = basket_obj->center_x - 0.045;
   drop_point.point.y = basket_obj->center_y;
-  drop_point.point.z = 0.04; // TODO: change
+  drop_point.point.z = 0.0; 
 
-  // // Step 6: Execute grasp and drop (skip orientation)
-  // if (!liftArm(pick_point)) return false;
-  // if (!moveAboveObject(pick_point, target_obj->shape)) return false;
-  // ros::Duration(1.0).sleep();
+  ROS_DEBUG("Lifting the arm...");
+  if (!liftArm(pick_point)) {
+  ROS_ERROR("Failed to lift arm.");
+  return true;
+  }
+  ROS_DEBUG("Lifted the arm.");
 
-  // if (!openGripper()) return false;
-  // if (!lowerToObject(pick_point)) return false;
-  // if (!closeGripper()) return false;
-  // if (!liftObject(drop_point)) return false;
-  // if (!moveAboveBasket(drop_point, target_obj->shape)) return false;
-  // if (!lowerToBasket(drop_point)) return false;
-  // if (!releaseObject()) return false;
+  ROS_DEBUG("Moving above object...");
+  if (!moveAboveObject(pick_point, "")) {
+  ROS_ERROR("Failed to move above offset.");
+  return true;
+  }
+  ROS_DEBUG("Reached above object.");
 
+  // Allow some time to process updated pointcloud
+  ros::Duration(2.0).sleep(); 
+  pick_point.header.stamp = ros::Time::now();
+  ros::spinOnce();
+  ros::Duration(0.2).sleep();
+  ros::spinOnce();
+  ros::Duration(0.2).sleep();
 
-///////////TODO
-  // ObjectInfo target_obj;
-  // bool basket_found = false;
-  // geometry_msgs::PoseStamped place_pose;
-  // for (const auto &obj : merged_objects) {
-  //   if (obj.shape == "basket") {
-  //     place_pose.header.frame_id = "panda_link0";
-  //     place_pose.pose.position.x = obj.center_x;
-  //     place_pose.pose.position.y = obj.center_y;
-  //     place_pose.pose.position.z = 0.15;
-  //     basket_found = true;
-  //     break;
-  //   }
-  // }
+  // --------------------------------------------------------------------------------
+  // Calculate orientation from object cluster
+  
+  // Convert the object point to a PoseStamped message
+  geometry_msgs::PoseStamped object_pose = pointStampedToPoseStamped(pick_point);
 
-  // if (!basket_found) {
-  //   ROS_ERROR("No basket found to place the object.");
-  //   return false;
-  // }
+  // Extract object from pointcloud (cluster)
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cluster = getObjectCluster(pick_point);
+  if (!cluster || cluster->empty()) {
+    ROS_ERROR("Failed to extract object cluster.");
+    return false;
+  }
 
-  // geometry_msgs::PoseStamped object_point;
-  // object_point.pose.position.x = target_obj.center_x;
-  // object_point.pose.position.y = target_obj.center_y;
-  // object_point.pose.position.z = 0.12;
+  // Convert cluster to binary image
+  cv::Mat binaryImg = clusterToBinaryImage(cluster, resolution);
+  if (binaryImg.empty()) {
+    ROS_ERROR("Binary image is empty!");
+    return false;
+  }
 
+  // Extract contours from the binary image
+  std::vector<std::vector<cv::Point>> contours = extractContours(binaryImg);
+  ROS_INFO("Extracted %lu contours", contours.size());
+  if (contours.empty()) {
+    ROS_ERROR("No contours found.");
+    return false;
+  }
 
+  // Calculate centre in binary image
+  cv::Moments m = cv::moments(binaryImg, true);
+  cv::Point globalCenter;
+  if (m.m00 != 0)
+    globalCenter = cv::Point(static_cast<int>(m.m10/m.m00), static_cast<int>(m.m01/m.m00));
+  else
+    globalCenter = cv::Point(binaryImg.cols/2, binaryImg.rows/2);
+  ROS_INFO("Global center (image coordinates): [%d, %d]", globalCenter.x, globalCenter.y);
 
+  // Select longest shape segment
+  std::vector<cv::Point> armContour = selectSegment(contours);
+  if (armContour.empty()) {
+    ROS_ERROR("No segment selected.");
+    return false;
+  }
 
-  // // 1. Move the arm to a pre-grasp offset
-  // ROS_DEBUG("Moving to pre-grasp offset...");
-  // if (!moveAboveObject(object_point, target_obj.shape)) {
-  // ROS_ERROR("Failed to move to pre-grasp offset.");
-  // return true;
-  // }
-  // ROS_DEBUG("Reached pre-grasp offset.");
-////////
+  // Calculate orientation from contour
+  cv::RotatedRect armRect = cv::minAreaRect(armContour);  // returns rotated rectangle
+  angle = armRect.angle;  // returns angle relative to rectangle's width
+  if (armRect.size.width < armRect.size.height) {
+    angle += 90.0; 
+  } 
+  ROS_INFO("Detected arm angle: %.2f degrees", angle);
 
-  // // 2. Open the gripper
-  // ROS_DEBUG("Opening gripper...");
-  // if (!openGripper()) {
-  // ROS_ERROR("Failed to open gripper.");
-  // return true;
-  // }
-  // ROS_DEBUG("Gripper opened successfully.");
+  // Convert angle to radians
+  double yaw = angle * CV_PI / 180.0;
+  // --------------------------------------------------------------------------------
 
-  // // 3. Lower the arm to grasp position
-  // ROS_DEBUG("Lowering arm to grasp the object...");
-  // if (!lowerToObject(object_point)) {  
-  // ROS_ERROR("Failed to lower to object.");
-  // return true;
-  // }
-  // ROS_DEBUG("Reached grasp position.");
+  // 1. Adjust gripper yaw angle
+  ROS_DEBUG("Adjusting gripper's yaw...");
+  if (!adjustGripperYaw(yaw)) {
+  ROS_ERROR("Failed rotate gripper.");
+  return true;
+  }
+  ROS_DEBUG("Gripper yaw adjusted successfully.");
 
-  // // 4. Close the gripper to grasp the object.
-  // ROS_DEBUG("Closing gripper...");
-  // if (!closeGripper()) {
-  // ROS_ERROR("Failed to grasp the object.");
-  // return true;
-  // }
-  // ROS_DEBUG("Object grasped successfully.");
+  // 2. Adjust gripper x,y positions 
+  ROS_DEBUG("Adjusting gripper's XY...");
+  if (!adjustGripperXY(pick_point, "", yaw)) {
+  ROS_ERROR("Failed to move gripper.");
+  return true;
+  }
+  ROS_DEBUG("Gripper XY adjusted successfully.");
 
-  // // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
-  // // potentially placing nothing in the basket.
+  // 3. Open the gripper
+  ROS_DEBUG("Opening gripper...");
+  if (!openGripper()) {
+  ROS_ERROR("Failed to open gripper.");
+  return true;
+  }
+  ROS_DEBUG("Gripper opened successfully.");
 
-  // // 5. Move the arm to lift the object
-  // ROS_DEBUG("Lifting the object...");
-  // if (!liftObject(goal_point)) { 
-  // ROS_ERROR("Failed to lift the object.");
-  // return true;
-  // }
-  // ROS_DEBUG("Object lifted successfully.");
+  // 4. Lower the arm to grasp position
+  ROS_DEBUG("Lowering arm to object...");
+  if (!lowerToObject(pick_point)) {  
+  ROS_ERROR("Failed to lower to object.");
+  return true;
+  }
+  ROS_DEBUG("Reached grasp position.");
 
-  // // 6. Move the arm to pre-place offset
-  // ROS_DEBUG("Moving to pre-place offset...");
-  // if (!moveToBasketOffset(goal_point)) {
-  // ROS_ERROR("Failed to move to pre-place offset.");
-  // return true;
-  // }
-  // ROS_DEBUG("Reached pre-place offset.");
+  // 5. Close the gripper to grasp the object.
+  ROS_DEBUG("Closing gripper...");
+  if (!closeGripper()) {
+  ROS_ERROR("Failed to grasp the object.");
+  return true;
+  }
+  ROS_DEBUG("Object grasped successfully.");
 
-  // // 7. Lower the arm to safe release height (Optional)
-  // ROS_DEBUG("Lowering arm to safe release height...");
-  // if (!lowerToBasket(goal_point)) {  
-  // ROS_ERROR("Failed to lower the arm.");
-  // return true;
-  // }
-  // ROS_DEBUG("Reached safe release height.");
+  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
+  // potentially placing nothing in the basket.
 
-  // // 8. Release object into the basket.
-  // ROS_DEBUG("Releasing object into the basket...");
-  // if (!releaseObject()) {
-  // ROS_ERROR("Failed to release object.");
-  // return true;
-  // }
-  // ROS_DEBUG("Object released successfully.");
+  // 6. Move the arm to lift the object
+  ROS_DEBUG("Lifting the object...");
+  if (!liftObject(drop_point)) { 
+  ROS_ERROR("Failed to lift the object.");
+  return true;
+  }
+  ROS_DEBUG("Object lifted successfully.");
 
-  // // 9. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
-  // // arm_group_.stop();
-  // // arm_group_.clearPoseTargets();
-  // // arm_group_.setPlanningTime(20.0); 
-  // // arm_group_.setNamedTarget("ready");
-  // // if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-  // //   ROS_INFO("Returned to 'ready' position successfully.");
-  // // } else {
-  // //   ROS_WARN("Failed to move to 'ready' position.");
-  // // }
+  // 7. Move the arm to pre-place offset
+  ROS_DEBUG("Moving above basket...");
+  if (!moveAboveBasket(drop_point, "")) {
+  ROS_ERROR("Failed to move above basket.");
+  return true;
+  }
+  ROS_DEBUG("Reached above basket.");
 
+  // 8. Lower the arm to safe release height (Optional)
+  ROS_DEBUG("Lowering arm to safe release height...");
+  if (!lowerToBasket(drop_point)) {  
+  ROS_ERROR("Failed to lower the arm.");
+  return true;
+  }
+  ROS_DEBUG("Reached safe release height.");
 
+  // 9. Release object into the basket.
+  ROS_DEBUG("Releasing object into the basket...");
+  if (!releaseObject()) {
+  ROS_ERROR("Failed to release object.");
+  return true;
+  }
+  ROS_DEBUG("Object released successfully.");
+
+  // 10. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+  arm_group_.setMaxVelocityScalingFactor(1); 
+  hand_group_.setMaxVelocityScalingFactor(1); 
+  arm_group_.setGoalJointTolerance(0.05);     
+  arm_group_.setGoalPositionTolerance(0.03);   
+  arm_group_.setGoalOrientationTolerance(0.05);
+  arm_group_.stop();
+  arm_group_.clearPoseTargets();
+  arm_group_.setNamedTarget("ready");
+  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+    ROS_INFO("Returned to 'ready' position successfully.");
+  } else {
+    ROS_WARN("Failed to move to 'ready' position.");
+  }
+  arm_group_.setMaxVelocityScalingFactor(0.5); 
+  hand_group_.setMaxVelocityScalingFactor(0.5); 
+  arm_group_.setGoalJointTolerance(def_joint_tol);  
+  arm_group_.setGoalPositionTolerance(def_pos_tol);            
+  arm_group_.setGoalOrientationTolerance(def_orient_tol);
+
+  ROS_INFO("Task 3 completed successfully.");
 
   return true;
 }
@@ -743,8 +823,7 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
 
 // ----------------------------------------------------------------------------
 bool
-cw2::adjustGripperYaw(double yaw,
-                      const std::string &shape_type)
+cw2::adjustGripperYaw(double yaw)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
@@ -761,11 +840,6 @@ cw2::adjustGripperYaw(double yaw,
               std::abs(yaw) * 180.0 / M_PI);  // in degrees
     return true; 
     }
-
-  // // Add 45 degrees to yaw for crosses
-  // if (shape_type == "cross") {
-  //   yaw += M_PI/4;
-  // }
 
   // Create new quaternion with same roll/pitch but new yaw
   tf2::Quaternion q_new;
@@ -1390,7 +1464,7 @@ for (const auto &contour : contours)
 return bestContour;
 }
 
-// Task 2 & 3
+// Task 2 & 3 helpers
 
 /////////////////////////////////////////////////////////////////////////////////
 bool 
