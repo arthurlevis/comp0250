@@ -31,8 +31,8 @@ cw2::cw2(ros::NodeHandle nh):
   // NEW: 
   // MoveIt planning parameters (joint-space planning only)
   arm_group_.setPlanningTime(60);            
-  arm_group_.setNumPlanningAttempts(2000); 
-  arm_group_.allowReplanning(true);           
+  arm_group_.setNumPlanningAttempts(2000);
+  arm_group_.allowReplanning(true);
 
   // MoveIt execution parameters (both Cartesian & joint-space planning)
   arm_group_.setMaxVelocityScalingFactor(0.5); 
@@ -435,6 +435,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   mergeNearbyMergedObjectsWithPriorityVoting();
   finalizeVotingResults();
 
+  // 2.print and count all detected objects 
   int cross_count = 0;
   int nought_count = 0;
   int black_count = 0;
@@ -445,7 +446,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   
 
 
-  // 2.print and count all detected objects 
   for (const auto& obj : merged_objects) {
     if (obj.color == "black") {
       black_count++;
@@ -493,7 +493,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   // ROS_INFO("Most common shape count: %d", most_common_shape);
 
 
-  // Find the object that is "closest to the robot's center point, has the most common shape, and is not black."
+   // Step 3: Find closest object among candidate shapes
   double min_dist = std::numeric_limits<double>::max();
   const MultiViewObject* target = nullptr;
 
@@ -513,9 +513,55 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     return false;
   }
 
-  ROS_INFO("Selected object to pick: shape=%s, color=%s, center=(%.3f, %.3f)",
-           target->shape.c_str(), target->color.c_str(),
+  // Step 4: Find the basket (only keep the one with most points)
+  const MultiViewObject* basket_obj = nullptr;
+  int max_basket_points = -1;
+
+  for (const auto& obj : merged_objects) {
+    if (obj.shape == "basket" && obj.point_count > max_basket_points) {
+      basket_obj = &obj;
+      max_basket_points = obj.point_count;
+    }
+  }
+
+  if (!basket_obj) {
+  ROS_WARN("Basket not detected. Using default basket position.");
+
+    basket_obj.center_x = -0.41 - 0.15;
+    basket_obj.center_y = -0.36;
+    basket_obj.shape = "basket";
+    basket_obj.color = "darkred";
+  }
+  //Shape: basket | Color: darkred | Center: (-0.409, -0.362)
+
+
+  ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f)", target->shape.c_str(),
            target->center_x, target->center_y);
+  ROS_INFO("Basket position: (%.3f, %.3f)", basket_obj->center_x, basket_obj->center_y);
+
+  // Step 5: Move to the target object
+  geometry_msgs::PointStamped pick_point;
+  pick_point.point.x = target->center_x - 0.045; // This offset is important
+  pick_point.point.y = target->center_y;
+  pick_point.point.z = 0.4; // TODO: change
+
+  geometry_msgs::PointStamped drop_point;
+  drop_point.point.x = basket_obj->center_x - 0.045; // This offset is important
+  drop_point.point.y = basket_obj->center_y;
+  drop_point.point.z = 0.04; // TODO: change
+
+  // // Step 6: Execute grasp and drop (skip orientation)
+  // if (!liftArm(pick_point)) return false;
+  // if (!moveAboveObject(pick_point, target_obj->shape)) return false;
+  // ros::Duration(1.0).sleep();
+
+  // if (!openGripper()) return false;
+  // if (!lowerToObject(pick_point)) return false;
+  // if (!closeGripper()) return false;
+  // if (!liftObject(drop_point)) return false;
+  // if (!moveAboveBasket(drop_point, target_obj->shape)) return false;
+  // if (!lowerToBasket(drop_point)) return false;
+  // if (!releaseObject()) return false;
 
 
 ///////////TODO
@@ -1010,7 +1056,7 @@ Important parameters:
 
 bool
 cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
-                            const std::string &action_name)
+                          const std::string &action_name)
 {
   moveit_msgs::RobotTrajectory trajectory;
   int max_planning_attempts = 10;
@@ -1117,7 +1163,7 @@ cw2::pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt)
 {
   geometry_msgs::PoseStamped pose;
   pose.header = pt.header;              
-  pose.pose.position = pt.point;    
+  pose.pose.position = pt.point;        
 
   // Assign default orientation 
   pose.pose.orientation.x = 0.0;
@@ -1233,7 +1279,7 @@ cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster
   int img_height = static_cast<int>(std::ceil((max_pt[1] - min_pt[1]) / resolution));
 
   // Create a blank image (8-bit grayscale)
-  cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);  
+  cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);
 
   // Determine coordinates of each cluster point
   for (const auto &pt : cluster->points)
@@ -1294,15 +1340,15 @@ for (const auto &contour : contours)
   cv::Moments m = cv::moments(contour);
   if (m.m00 <= 0) continue;
 
-  // Fit a rotated rectangle to measure length
-  cv::RotatedRect box = cv::minAreaRect(contour);
-  float length = std::max(box.size.width, box.size.height);
+    // Fit a rotated rectangle to measure length
+    cv::RotatedRect box = cv::minAreaRect(contour);
+    float length = std::max(box.size.width, box.size.height);
 
-  if (length > bestLength)
-  {
-    bestLength = length;
-    bestContour = contour;
-    }
+    if (length > bestLength)
+    {
+      bestLength = length;
+      bestContour = contour;
+  }
 }
 
 return bestContour;
@@ -1471,6 +1517,76 @@ cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// void 
+// cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
+//   detected_objects.clear(); // Clear old data before computing
+//   std::string target_frame = "panda_link0";
+
+//   for (const auto &cluster : clusters) {
+//     if (cluster->empty()) continue;
+
+//     // Compute bounding box
+//     double min_x = std::numeric_limits<double>::max();
+//     double max_x = std::numeric_limits<double>::lowest();
+//     double min_y = std::numeric_limits<double>::max();
+//     double max_y = std::numeric_limits<double>::lowest();
+
+//     // Accumulate RGB values for color computation
+//     double sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
+//     int valid_points = 0;
+
+//     for (const auto &point : cluster->points) {
+//       // Update bounding box
+//       min_x = std::min(min_x, static_cast<double>(point.x));
+//       max_x = std::max(max_x, static_cast<double>(point.x));
+//       min_y = std::min(min_y, static_cast<double>(point.y));
+//       max_y = std::max(max_y, static_cast<double>(point.y));
+
+//       // Accumulate color values
+//       sum_r += static_cast<double>(point.r);
+//       sum_g += static_cast<double>(point.g);
+//       sum_b += static_cast<double>(point.b);
+//       valid_points++;
+//     }
+
+//     // Compute center point
+//     double center_x = (min_x + max_x) / 2.0;
+//     double center_y = (min_y + max_y) / 2.0;
+
+//     // Compute area
+//     double area = (max_x - min_x) * (max_y - min_y);
+
+//     // Compute color
+//     std::string color = "unknown";
+//     if (valid_points > 0) {
+//       double avg_r = sum_r / valid_points;
+//       double avg_g = sum_g / valid_points;
+//       double avg_b = sum_b / valid_points;
+//       color = computeColor(avg_r, avg_g, avg_b); // Directly call computeColor
+//     }
+
+//     // Transform center point to `base_link`
+//     geometry_msgs::PointStamped point_in, point_out;
+//     point_in.header.frame_id = latest_pointcloud_->header.frame_id;
+//     point_in.header.stamp = latest_pointcloud_->header.stamp;
+//     point_in.point.x = center_x;
+//     point_in.point.y = center_y;
+//     point_in.point.z = 0.0;
+
+//     try {
+//       tf_buffer_.transform(point_in, point_out, target_frame, ros::Duration(1.0));
+//       center_x = point_out.point.x;
+//       center_y = point_out.point.y;
+//     } catch (tf2::TransformException &ex) {
+//       ROS_WARN("Could not transform object center to %s: %s", target_frame.c_str(), ex.what());
+//     }
+
+//     // Store in detected_objects
+//     detected_objects.push_back({center_x, center_y, area, color});
+//   }
+
+//   ROS_INFO("Detected %zu objects.", detected_objects.size());
+// }
 void 
 cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
   detected_objects.clear(); // Clear old data before computing
@@ -1479,53 +1595,39 @@ cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
   for (const auto &cluster : clusters) {
     if (cluster->empty()) continue;
 
-    // Compute bounding box
-    double min_x = std::numeric_limits<double>::max();
-    double max_x = std::numeric_limits<double>::lowest();
-    double min_y = std::numeric_limits<double>::max();
-    double max_y = std::numeric_limits<double>::lowest();
+    // === Compute centroid ===
+    Eigen::Vector4f centroid;
+    pcl::compute3DCentroid(*cluster, centroid);
 
-    // Accumulate RGB values for color computation
+    double center_x = static_cast<double>(centroid[0]);
+    double center_y = static_cast<double>(centroid[1]);
+
+    // === Accumulate RGB values for color computation ===
     double sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
     int valid_points = 0;
 
     for (const auto &point : cluster->points) {
-      // Update bounding box
-      min_x = std::min(min_x, static_cast<double>(point.x));
-      max_x = std::max(max_x, static_cast<double>(point.x));
-      min_y = std::min(min_y, static_cast<double>(point.y));
-      max_y = std::max(max_y, static_cast<double>(point.y));
-
-      // Accumulate color values
       sum_r += static_cast<double>(point.r);
       sum_g += static_cast<double>(point.g);
       sum_b += static_cast<double>(point.b);
       valid_points++;
     }
 
-    // Compute center point
-    double center_x = (min_x + max_x) / 2.0;
-    double center_y = (min_y + max_y) / 2.0;
-
-    // Compute area
-    double area = (max_x - min_x) * (max_y - min_y);
-
-    // Compute color
     std::string color = "unknown";
     if (valid_points > 0) {
       double avg_r = sum_r / valid_points;
       double avg_g = sum_g / valid_points;
       double avg_b = sum_b / valid_points;
-      color = computeColor(avg_r, avg_g, avg_b); // Directly call computeColor
+      color = computeColor(avg_r, avg_g, avg_b);
     }
 
-    // Transform center point to `base_link`
+    // === Transform center point to target frame ===
     geometry_msgs::PointStamped point_in, point_out;
     point_in.header.frame_id = latest_pointcloud_->header.frame_id;
     point_in.header.stamp = latest_pointcloud_->header.stamp;
     point_in.point.x = center_x;
     point_in.point.y = center_y;
-    point_in.point.z = 0.0;
+    point_in.point.z = 0.0;  // z ignored here
 
     try {
       tf_buffer_.transform(point_in, point_out, target_frame, ros::Duration(1.0));
@@ -1535,8 +1637,8 @@ cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
       ROS_WARN("Could not transform object center to %s: %s", target_frame.c_str(), ex.what());
     }
 
-    // Store in detected_objects
-    detected_objects.push_back({center_x, center_y, area, color});
+    // === Store the result ===
+    detected_objects.push_back({center_x, center_y, static_cast<int>(cluster->size()), color});
   }
 
   ROS_INFO("Detected %zu objects.", detected_objects.size());
@@ -1657,12 +1759,12 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
     std::string shape;
     if (obj.color == "darkred") {
       shape = "basket";
-      // 如果当前是最大的 basket，就保留它
+      // If the current object is the largest basket, keep it
       if ((int)clusters[i]->points.size() > max_basket_points) {
         max_basket_points = clusters[i]->points.size();
         basket_index = i;
       }
-      continue;  // 暂时跳过，将在后面再加入
+      continue;  // Skip for now, will be added later
     }
     else if (obj.color == "black") {
       shape = "obstacle";
@@ -1671,7 +1773,7 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
       shape = classifyObjectByPointCount(clusters[i]->points.size());
     }
 
-    // 匹配是否已有 merge 对象
+    // Check if it matches an existing merged object
     bool matched = false;
     for (auto& merged : merged_objects) {
       double dist = std::hypot(merged.center_x - obj.center_x,
@@ -1697,7 +1799,7 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
     }
   }
 
-  // 处理 basket（只保留最大的一个）
+  // Handle the basket (only keep the largest one)
   if (basket_index != -1) {
     const auto& basket_obj = detected_objects[basket_index];
     merged_objects.push_back({
@@ -1737,14 +1839,14 @@ cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
           final.center_y = current.center_y;
         }
 
-        // 形状逻辑
+        // Shape logic
         if (current.shape == "nought" || final.shape == "nought") {
           final.shape = "nought";
         } else if (current.shape == "cross" || final.shape == "cross") {
           final.shape = "cross";
         }
 
-        // 颜色逻辑
+        // Color logic
         if (final.color == "unknown" && current.color != "unknown") {
           final.color = current.color;
         }
@@ -1769,7 +1871,7 @@ cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
     }
   }
 
-  // 清除其他 basket，只保留最大一个
+  // Remove other baskets, keeping only the largest one
   if (max_basket_idx != -1) {
     std::vector<MultiViewObject> filtered;
     for (size_t i = 0; i < merged_final.size(); ++i) {
@@ -1789,7 +1891,7 @@ cw2::finalizeVotingResults() {
 
   for (const auto& obj : merged_objects) {
     if (obj.shape == "unknown") {
-      continue;  // 跳过未知形状
+      continue;  // Skip unknown shapes
     }
 
     std::ostringstream oss;
@@ -1805,5 +1907,3 @@ cw2::finalizeVotingResults() {
                     << obj.center_x << ", " << obj.center_y << ")");
   }
 }
-
-  
