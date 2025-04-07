@@ -11,7 +11,8 @@ cw2::cw2(ros::NodeHandle nh):
   tf_buffer_(ros::Duration(15)),
   tf_listener_(tf_buffer_),
   g_cloud_ptr(new PointC),
-  g_cloud_filtered(new PointC)
+  g_cloud_filtered(new PointC),
+  cloud_ptr_(new pcl::PointCloud<pcl::PointXYZRGBA>())
 {
   /* Class constructor */
 
@@ -1394,6 +1395,11 @@ cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_input_msg)
   // Convert ROS message to PCL point cloud
   pcl_conversions::toPCL (*cloud_input_msg, g_pcl_pc);
   pcl::fromPCLPointCloud2 (g_pcl_pc, *g_cloud_ptr);
+
+  // Also convert directly to cloud_ptr_ (TODO: This is from Arthur's version and check if there is conflict later)
+  pcl::fromROSMsg(*cloud_input_msg, *cloud_ptr_);
+
+  // Filter the point cloud
   pubFilteredPCMsg(g_pub_cloud, *g_cloud_filtered);
 }
 

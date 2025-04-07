@@ -17,7 +17,12 @@ solution is contained within the cw2_team_<your_team_number> package */
 // #include <geometry_msgs/PoseStamped.h>
 // #include <geometry_msgs/PointStamped.h>
 
+#include <sstream>
+#include <iomanip>
+#include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
+#include <ros/package.h>
+
 
 // include services from the spawner package 
 #include "cw2_world_spawner/Task1Service.h"
@@ -41,10 +46,20 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/passthrough.h>
+
 #include <pcl/common/transforms.h> 
 #include <pcl/search/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/common/centroid.h>
+#include <pcl/common/common.h> 
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 
 // aliases
 typedef pcl::PointXYZRGB PointT;
@@ -85,10 +100,7 @@ public:
   bool 
   t3_callback(cw2_world_spawner::Task3Service::Request &request,
     cw2_world_spawner::Task3Service::Response &response);
-
-  bool 
-  moveGripper(float width);
-
+  // For task 2 and 3
   void
   pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 
@@ -103,9 +115,7 @@ public:
 
   void 
   segmentObjects2D(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters);
-
-
-  
+  // For Task 2 and 3
   bool
   moveToPoseWithFallback(const geometry_msgs::PoseStamped &goal_pose);
 
@@ -117,15 +127,23 @@ public:
   void mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold = 0.09);
 
 private:
+
   std::vector<ObjectInfo> detected_objects;
   std::vector<MultiViewObject> merged_objects;
 
   /* ----- class member FUNCTIONS ----- */
 
-  // Pick & place
+  // Pick-and-place
+  bool 
+  liftArm(const geometry_msgs::PointStamped &object_point);
   bool
   moveAboveObject(const geometry_msgs::PointStamped &object_point,
                   const std::string &shape_type);
+  bool
+  adjustGripperYaw(double yaw); 
+  bool
+  adjustGripperXY(const std::string &shape_type,
+                  double yaw);
   bool
   openGripper();
   bool
@@ -145,8 +163,29 @@ private:
   // Cartesian path planning
   bool
   planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
-                        const std::string &action_name);
+                          const std::string &action_name);
 
+  // // Pointcloud callback
+  // void
+  // pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg);
+
+  // Cluster helpers
+  geometry_msgs::PoseStamped
+  pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt);
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr
+  getObjectCluster(const geometry_msgs::PointStamped &object_point);
+
+  // Calculate cluster orientation
+  cv::Mat
+  clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster,
+                      double resolution);
+  std::vector<std::vector<cv::Point>>
+  extractContours(const cv::Mat &binaryImg);
+  std::vector<cv::Point>
+  selectSegment(const std::vector<std::vector<cv::Point>> &contours,
+                // const geometry_msgs::PointStamped &object_point, 
+                const cv::Point &globalCenter,
+                const std::string &shape_type);
 
   /* ----- class member VARIABLES ----- */
 
@@ -154,21 +193,24 @@ private:
   ros::ServiceServer t1_service_;
   ros::ServiceServer t2_service_;
   ros::ServiceServer t3_service_;
-  ros::Subscriber pc_sub_; 
 
   sensor_msgs::PointCloud2ConstPtr latest_pointcloud_; 
-
- 
-
-
 
   // MoveIt interfaces
   moveit::planning_interface::MoveGroupInterface arm_group_{"panda_arm"};
   moveit::planning_interface::MoveGroupInterface hand_group_{"hand"};
   moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 
+  // This part might be conflicts
+  // Pointcloud
+  ros::Subscriber pcl_sub_;  // subscriber listening for pointcloud                  
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr_;  // pointer to pointcloud in PCL format
+
+  ros::Subscriber pc_sub_; 
   pcl::PCLPointCloud2 g_pcl_pc;
   PointCPtr g_cloud_ptr;
+  //
+
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
@@ -178,8 +220,9 @@ private:
   sensor_msgs::PointCloud2 g_cloud_filtered_msg;
 
 
-  // Robot frames
-  std::string base_frame_ = "panda_link0";
+  // Reference frames
+  std::string base_frame_ = "panda_link0";  // robot base
+  std::string camera_frame_ = "color";      // camera
 
   // Gripper (dimensions in hand.xacro)
   double gripper_open_ = 0.08;       // 80 mm 
@@ -192,7 +235,11 @@ private:
   // Default goal tolerances
   double def_joint_tol = 0.01;   // 0.01 rad (~0.6 deg) per joint
   double def_pos_tol = 0.01;     // 10 mm
-  double def_orient_tol = 0.01;  // 0.01 rad
+  double def_orient_tol = 0.01;  // 0.01 rad 
+
+  // Camera resolution
+  double resolution = 0.0028;  // mm per pixel
+  double angle = 0.0;
 };
 
 #endif // end of include guard for cw2_CLASS_H_
