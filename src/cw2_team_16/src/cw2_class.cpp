@@ -249,8 +249,6 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 
   ROS_INFO("The coursework solving callback for task 2 has been triggered");
 
-
-
   // === Step 1: Inspect the reference object ===
 
   // Define the reference and mystery object poses
@@ -297,6 +295,8 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   ros::Duration(2.0).sleep();
 
   // Filter the point cloud to remove color other than red , blue, and purple
+
+  // Segment the point cloud into objects
   colorFilter(g_cloud_ptr, g_cloud_filtered);
   clusters.clear();
   merged_objects.clear();
@@ -304,12 +304,14 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   updateMergedObjectsFromSingleView(clusters);
   mergeNearbyMergedObjectsWithPriorityVoting();
 
+  // Check if any objects were detected
   if (merged_objects.empty()) {
     ROS_WARN("No object detected at mystery point.");
     response.mystery_object_num = 0;
     return true;
   }
 
+  // Print the detected objects (DEBUG)
   std::string mystery_shape = merged_objects.front().shape;
   ROS_INFO("Mystery object shape: %s", mystery_shape.c_str());
 
@@ -324,39 +326,6 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 
   ROS_INFO("Final mystery_object_num = %ld", response.mystery_object_num);
 
-
-
-
-
-  // // Service response
-  // if (merged_objects.empty()) {
-  //   ROS_WARN("No objects detected.");
-  //   response.mystery_object_num = 0;
-  //   return true;
-  // }
-
-  // const auto& target = *std::max_element(merged_objects.begin(), merged_objects.end(),
-  //                                       [](const MultiViewObject& a, const MultiViewObject& b) {
-  //                                         return a.point_count < b.point_count;
-  //                                       });
-
-  // if (target.shape == "nought")
-  //   response.mystery_object_num = 1;
-  // else if (target.shape == "cross")
-  //   response.mystery_object_num = 2;
-
-  // ROS_INFO("Mystery object -> shape=%s, color=%s, position=(%.3f, %.3f), result=%ld",
-  //         target.shape.c_str(), target.color.c_str(), target.center_x, target.center_y,
-  //         response.mystery_object_num);
-
-  // // Move to the detected object
-  // geometry_msgs::PoseStamped object_pose;
-  // object_pose.pose.position.x = target.center_x;
-  // object_pose.pose.position.y = target.center_y;
-  // object_pose.pose.position.z = 0.2;
-
-  // moveToPoseWithFallback(object_pose);
-
   return true;
 }
 
@@ -370,7 +339,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   ROS_INFO("The coursework solving callback for task 3 has been triggered");
 
-    // 1. scan objects and basket
+  // 1. scan objects and basket
   std::vector<geometry_msgs::PoseStamped> camera_view_poses;
   geometry_msgs::PoseStamped pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8;
   
@@ -393,10 +362,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
 
   // === Viewpoint 5: Top Left ===
-  //x=-0.432, y=-0.246, z=0.611
-  // pose5.pose.position.x = -0.468;
-  // pose5.pose.position.y = -0.265;
-  // pose5.pose.position.z = 0.603;
   pose5 = pose3;
   pose5.pose.position.x = -0.468;
 
@@ -417,10 +382,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   merged_objects.clear();
 
-  // Note
-  // Left Bottom x=0.468, y=-0.265, z=0.603
-  // Right Bottom x=0.449, y=0.266, z=0.618
-
   for (const auto& pose : camera_view_poses) {
     moveToPoseWithFallback(pose);
     ros::Duration(1.5).sleep();
@@ -439,12 +400,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   int cross_count = 0;
   int nought_count = 0;
   int black_count = 0;
-  // int64 total_num_shapes = 0;
-  // int64 num_most_common_shape = 0;
-
-  // obj_num = detected_objects.size();
-  
-
 
   for (const auto& obj : merged_objects) {
     if (obj.color == "black") {
@@ -455,8 +410,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
       nought_count++;
     }
 
-    // ROS_INFO("Merged Object -> Shape: %s | Color: %s | Center: (%.3f, %.3f)",
-    //          obj.shape.c_str(), obj.color.c_str(), obj.center_x, obj.center_y);
   }
 
   ROS_INFO("Merged Summary -> Cross: %d, Nought: %d, Black (obstacles): %d",
@@ -482,15 +435,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     ROS_ERROR("No valid cross or nought objects found.");
     return false;
   }
-
-  
-
-
-  // ROS_INFO("Most common shape(s): %s", candidate_shapes[0].c_str());
-  // if (candidate_shapes.size() > 1) {
-  //   ROS_INFO("Most common shape(s): %s and %s", candidate_shapes[0].c_str(), candidate_shapes[1].c_str());
-  // }
-  // ROS_INFO("Most common shape count: %d", most_common_shape);
 
 
    // Step 3: Find closest object among candidate shapes
@@ -527,12 +471,14 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   if (!basket_obj) {
   ROS_WARN("Basket not detected. Using default basket position.");
 
-    basket_obj.center_x = -0.41 - 0.15;
-    basket_obj.center_y = -0.36;
-    basket_obj.shape = "basket";
-    basket_obj.color = "darkred";
+    static MultiViewObject default_basket_obj;
+    default_basket_obj.center_x = -0.41 - 0.045;
+    default_basket_obj.center_y = -0.36;
+    default_basket_obj.shape = "basket";
+    default_basket_obj.color = "darkred";
+    basket_obj = &default_basket_obj;
+
   }
-  //Shape: basket | Color: darkred | Center: (-0.409, -0.362)
 
 
   ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f)", target->shape.c_str(),
@@ -1358,28 +1304,36 @@ return bestContour;
 
 /////////////////////////////////////////////////////////////////////////////////
 bool 
-cw2::moveToPoseWithFallback(const geometry_msgs::PoseStamped &target_pose) {geometry_msgs::PoseStamped pose_copy = target_pose;
+cw2::moveToPoseWithFallback(const geometry_msgs::PoseStamped &target_pose) {
+  geometry_msgs::PoseStamped pose_copy = target_pose;
+  /* This function is for pure moving without tolerances for picking & placing. */
 
+  // Ensure the target pose has a valid frame ID
   if (pose_copy.header.frame_id.empty()) {
     pose_copy.header.frame_id = "panda_link0";
   }
 
+  // Set a default orientation if none is provided
   const auto& q = pose_copy.pose.orientation;
   if (q.x == 0 && q.y == 0 && q.z == 0 && q.w == 0) {
     tf2::Quaternion q_set;
-    q_set.setRPY(0.0, M_PI, M_PI_4 + M_PI_2);
+    q_set.setRPY(0.0, M_PI, M_PI_4 + M_PI_2); // Default orientation (roll, pitch, yaw)
     q_set.normalize();
     pose_copy.pose.orientation = tf2::toMsg(q_set);
   }
 
+  // Add the target pose to the waypoints for Cartesian planning
   std::vector<geometry_msgs::Pose> waypoints;
   waypoints.push_back(pose_copy.pose);
   arm_group_.clearPathConstraints();
 
   bool success = false;
+
+  // Attempt Cartesian path planning
   if (planAndExecuteCartesian(waypoints, "moveToPoseWithFallback")) {
     success = true;
   } else {
+    // If Cartesian planning fails, fall back to joint-space planning
     ROS_WARN("Cartesian planning failed, switching to joint-space planning...");
     arm_group_.setPoseTarget(pose_copy);
     moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
@@ -1389,6 +1343,7 @@ cw2::moveToPoseWithFallback(const geometry_msgs::PoseStamped &target_pose) {geom
     }
   }
 
+  // Check if all planning attempts failed
   if (!success) {
     ROS_ERROR("moveToPoseWithFallback: All planning attempts failed.");
     return false;
@@ -1407,7 +1362,7 @@ cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_input_msg)
   pcl_conversions::toPCL (*cloud_input_msg, g_pcl_pc);
   pcl::fromPCLPointCloud2 (g_pcl_pc, *g_cloud_ptr);
 
-  // Also convert directly to cloud_ptr_ (TODO: This is from Arthur's version and check if there is conflict later)
+  // Also convert directly to cloud_ptr_ 
   pcl::fromROSMsg(*cloud_input_msg, *cloud_ptr_);
 
   // Filter the point cloud
@@ -1418,26 +1373,6 @@ cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_input_msg)
 std::string
 cw2::computeColor(double avg_r, double avg_g, double avg_b)
 { 
-  // // Blue detection (Target: R=25, G=25, B=204)
-  // if (avg_b > 170 && avg_r < 80 && avg_g < 80) {
-  //   return "blue";
-  // } 
-  // // Red detection (Target: R=204, G=25, B=25)
-  // else if (avg_r > 170 && avg_g < 80 && avg_b < 80) {
-  //   return "red";
-  // } 
-  // // Purple detection (Target: R=204, G=25, B=204)
-  // else if (avg_r > 170 && avg_b > 170 && avg_g < 80) {
-  //   return "purple";
-  // }
-  // // Black detection (Target: R=0, G=0, B=0)
-  // else if (avg_r < 80 && avg_g < 80 && avg_b < 80) {
-  //   return "black";
-  // }
-  
-  // // Default case
-  // return "none";
-
   // Normalize to [0, 1] range
   double r = avg_r / 255.0;
   double g = avg_g / 255.0;
@@ -1517,78 +1452,10 @@ cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// void 
-// cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
-//   detected_objects.clear(); // Clear old data before computing
-//   std::string target_frame = "panda_link0";
-
-//   for (const auto &cluster : clusters) {
-//     if (cluster->empty()) continue;
-
-//     // Compute bounding box
-//     double min_x = std::numeric_limits<double>::max();
-//     double max_x = std::numeric_limits<double>::lowest();
-//     double min_y = std::numeric_limits<double>::max();
-//     double max_y = std::numeric_limits<double>::lowest();
-
-//     // Accumulate RGB values for color computation
-//     double sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
-//     int valid_points = 0;
-
-//     for (const auto &point : cluster->points) {
-//       // Update bounding box
-//       min_x = std::min(min_x, static_cast<double>(point.x));
-//       max_x = std::max(max_x, static_cast<double>(point.x));
-//       min_y = std::min(min_y, static_cast<double>(point.y));
-//       max_y = std::max(max_y, static_cast<double>(point.y));
-
-//       // Accumulate color values
-//       sum_r += static_cast<double>(point.r);
-//       sum_g += static_cast<double>(point.g);
-//       sum_b += static_cast<double>(point.b);
-//       valid_points++;
-//     }
-
-//     // Compute center point
-//     double center_x = (min_x + max_x) / 2.0;
-//     double center_y = (min_y + max_y) / 2.0;
-
-//     // Compute area
-//     double area = (max_x - min_x) * (max_y - min_y);
-
-//     // Compute color
-//     std::string color = "unknown";
-//     if (valid_points > 0) {
-//       double avg_r = sum_r / valid_points;
-//       double avg_g = sum_g / valid_points;
-//       double avg_b = sum_b / valid_points;
-//       color = computeColor(avg_r, avg_g, avg_b); // Directly call computeColor
-//     }
-
-//     // Transform center point to `base_link`
-//     geometry_msgs::PointStamped point_in, point_out;
-//     point_in.header.frame_id = latest_pointcloud_->header.frame_id;
-//     point_in.header.stamp = latest_pointcloud_->header.stamp;
-//     point_in.point.x = center_x;
-//     point_in.point.y = center_y;
-//     point_in.point.z = 0.0;
-
-//     try {
-//       tf_buffer_.transform(point_in, point_out, target_frame, ros::Duration(1.0));
-//       center_x = point_out.point.x;
-//       center_y = point_out.point.y;
-//     } catch (tf2::TransformException &ex) {
-//       ROS_WARN("Could not transform object center to %s: %s", target_frame.c_str(), ex.what());
-//     }
-
-//     // Store in detected_objects
-//     detected_objects.push_back({center_x, center_y, area, color});
-//   }
-
-//   ROS_INFO("Detected %zu objects.", detected_objects.size());
-// }
 void 
 cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
+  /* This function computes the centers of detected objects */
+
   detected_objects.clear(); // Clear old data before computing
   std::string target_frame = "panda_link0";
 
@@ -1647,6 +1514,7 @@ cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
 ///////////////////////////////////////////////////////////////////////////////
 void
 cw2::segmentObjectsWithOpenCV(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters) {
+  /* This function segments the point cloud using OpenCV and returns clusters */
   if (!in_cloud_ptr || in_cloud_ptr->empty()) {
     ROS_WARN("Input point cloud is empty, skipping OpenCV segmentation.");
     return;
@@ -1741,6 +1609,7 @@ cw2::segmentObjectsWithOpenCV(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &c
 
 std::string 
 cw2::classifyObjectByPointCount(size_t num_points) {
+  /* This is the parameterized function to classify objects based on point count */
   if (num_points > 20000) return "nought";
   if (num_points > 8000)  return "cross";
   return "unknown";
@@ -1748,6 +1617,8 @@ cw2::classifyObjectByPointCount(size_t num_points) {
 
 void 
 cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
+  /* This function updates the merged objects based on one view */
+  
   computeObjectCenters(clusters);
 
   int basket_index = -1;
@@ -1814,9 +1685,10 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
   }
 }
 
-
 void 
 cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
+  /* This function merges nearby merged objects based on distance and give results
+     based on voting. */
   std::vector<MultiViewObject> merged_final;
 
   for (const auto& current : merged_objects) {
@@ -1887,7 +1759,8 @@ cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
 
 void 
 cw2::finalizeVotingResults() {
-  ROS_INFO("==== Voting Results ====");
+  /* This function finalizes the merging results and prints them. */
+  ROS_INFO("==== Results ====");
 
   for (const auto& obj : merged_objects) {
     if (obj.shape == "unknown") {
