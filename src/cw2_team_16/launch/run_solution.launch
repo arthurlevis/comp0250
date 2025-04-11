@@ -6,6 +6,10 @@
 	<!-- load panda model and gazebo parameters -->
 	<include file="$(find panda_description)/launch/description.launch"/>
 
+	<!-- Execution parameters -->
+    <param name="trajectory_execution/allowed_execution_duration_scaling" value="5.0"/> 
+    <param name="trajectory_execution/execution_duration_monitoring" value="false"/> 
+
 	<!-- start the coursework world spawner with a delay -->
 	<arg name="models_dir" value="$(find cw2_world_spawner)/models/"/>
 	<include file="$(find cw2_world_spawner)/launch/world_spawner.launch">
