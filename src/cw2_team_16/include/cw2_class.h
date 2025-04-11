@@ -17,6 +17,7 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <geometry_msgs/Quaternion.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/PointStamped.h>
+#include <cmath> 
 #include <sstream>
 #include <iomanip>
 #include <Eigen/Dense>
@@ -61,10 +62,11 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <opencv2/opencv.hpp>
 
 // aliases
-typedef pcl::PointXYZRGB PointT;
+typedef pcl::PointXYZRGBA PointT;
 typedef pcl::PointCloud<PointT> PointC;
 typedef PointC::Ptr PointCPtr;
 
+// ADD COMMENT
 struct MultiViewObject {
   float center_x, center_y;
   int point_count;
@@ -74,6 +76,7 @@ struct MultiViewObject {
   std::vector<int> point_counts_history;
 };
 
+// ADD COMMENT
 struct ObjectInfo {
   double center_x;
   double center_y;
@@ -99,32 +102,6 @@ public:
   bool 
   t3_callback(cw2_world_spawner::Task3Service::Request &request,
     cw2_world_spawner::Task3Service::Response &response);
-  // For task 2 and 3
-  void
-  pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
-
-  std::string
-  computeColor(double avg_r, double avg_g, double avg_b);
-  void 
-  colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr);
-  void
-  pubFilteredPCMsg (ros::Publisher &pc_pub, PointC &pc);
-  void 
-  computeObjectCenters(const std::vector<PointCPtr> &clusters);
-
-  void 
-  segmentObjects2D(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters);
-  // For Task 2 and 3
-  bool
-  moveToPoseWithFallback(const geometry_msgs::PoseStamped &goal_pose);
-
-  void segmentObjectsWithOpenCV(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters);
-
-  std::string classifyObjectByPointCount(size_t num_points);
-  void updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters);
-  void finalizeVotingResults();
-  void mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold = 0.09);
-  std::string classifyShapeWithOpenCV(PointCPtr cluster_cloud, float &estimated_x_mm);
 
 private:
 
@@ -133,57 +110,97 @@ private:
 
   /* ----- class member FUNCTIONS ----- */
 
-  // Pick-and-place
+  // ROBOT MOTION helpers--------------------------------------------------------
+  bool
+  moveAboveObject(const geometry_msgs::PointStamped &object_point, 
+                  double eef_step,
+                  std::vector<double> tolerances);
   bool 
-  liftArm(const geometry_msgs::PointStamped &object_point);
+  moveArmUpDown(const geometry_msgs::PoseStamped &target_pose,
+                const std::string &action_name,
+                double eef_step,
+                std::vector<double> tolerances);
   bool
-  moveAboveObject(const geometry_msgs::PointStamped &object_point,
-                  const std::string &shape_type);
-  bool
-  adjustGripperYaw(double yaw); 
-  bool
-  adjustGripperXY(const geometry_msgs::PointStamped &object_point,
+  moveHorizontally(const geometry_msgs::PointStamped &point,
                   const std::string &shape_type,
-                  double yaw);
+                  double new_yaw,
+                  const std::string &action_name,  
+                  double eef_step,
+                  std::vector<double> tolerances);
   bool
-  openGripper();
+  moveToReadyPose(double velocity_scaling,
+                  double accel_scaling,
+                  std::vector<double> tolerances); 
   bool
-  lowerToObject(const geometry_msgs::PointStamped &object_point);
+  moveToPoseWithFallback(const geometry_msgs::PoseStamped &goal_pose);
   bool
-  closeGripper();
-  bool
-  liftObject(const geometry_msgs::PointStamped &goal_point);
-  bool
-  moveAboveBasket(const geometry_msgs::PointStamped &goal_point,
-                  const std::string &shape_type);
-  bool
-  lowerToBasket(const geometry_msgs::PointStamped &goal_point);
-  bool
-  releaseObject();
-
-  // Cartesian path planning
+  adjustYaw(const std::string &shape_type,
+            double new_yaw,
+            double velocity_scaling,
+            double accel_scaling,
+            std::vector<double> tolerances); 
   bool
   planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
-                          const std::string &action_name);
+                          const std::string &action_name,
+                          double eef_step);
 
-  // // Pointcloud callback
-  // void
-  // pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg);
+  // GRIPPER helper--------------------------------------------------------------
+  bool
+  toggleGripper(double gripper_width,
+                const std::string &action_name,
+                double velocity_scaling,
+                double accel_scaling);
 
-  // Cluster helpers
-  geometry_msgs::PoseStamped
-  pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt);
-  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr
+  // POINTCLOUD helpers-----------------------------------------------------------
+  void
+  pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg);
+  void
+  pubFilteredPCMsg (ros::Publisher &pc_pub, PointC &pc);
+  PointCPtr
   getObjectCluster(const geometry_msgs::PointStamped &object_point);
 
-  // Calculate cluster orientation
+  // COMPUTER VISION helpers-------------------------------------------------------
   cv::Mat
-  clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster,
-                      double resolution);
+  clusterToBinaryImg(const PointCPtr &cluster,
+                    double resolution);
   std::vector<std::vector<cv::Point>>
   extractContours(const cv::Mat &binaryImg);
-  std::vector<cv::Point>
-  selectSegment(const std::vector<std::vector<cv::Point>> &contours);
+  double
+  findActualAngle(const std::string &shape_type,
+                  double angle);
+  std::string
+  computeColor(double avg_r,
+              double avg_g,
+              double avg_b);
+  void 
+  colorFilter(const PointCPtr &in_cloud_ptr,
+              PointCPtr &out_cloud_ptr);
+  void 
+  computeObjectCenters(const std::vector<PointCPtr> &clusters);
+
+  void
+  segmentObject(PointCPtr &in_cloud_ptr,
+                std::vector<PointCPtr> &clusters);
+  std::string
+  classifyObjectByPointCount(size_t num_points);
+  void
+  updateMergedObjects(const std::vector<PointCPtr> &clusters);
+  void
+  refineObjectMerging(float dist_threshold = 0.09);
+  void
+  determineObjectFromVotes();
+  std::string
+  classifyShape(PointCPtr cluster_cloud, float &estimated_x_mm);
+  
+  // // --------------------------------------------------------------------------
+  // IF NEEDED
+  // geometry_msgs::PoseStamped
+  // pointToPose(const geometry_msgs::PointStamped &point);
+
+  // NOT IN CPP
+  // void 
+  // segmentObjects2D(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters);
+ 
 
   /* ----- class member VARIABLES ----- */
 
@@ -199,16 +216,12 @@ private:
   moveit::planning_interface::MoveGroupInterface hand_group_{"hand"};
   moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 
-  // Pointcloud
-  ros::Subscriber pc_sub_;  // subscriber listening for pointcloud                  
-  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_ptr_;  // pointer to pointcloud in PCL format
-
-  pcl::PCLPointCloud2 g_pcl_pc;
-  PointCPtr g_cloud_ptr;
-
-  ros::Publisher g_pub_cloud;
-  PointCPtr g_cloud_filtered;
-  sensor_msgs::PointCloud2 g_cloud_filtered_msg;
+  // Pointclouds
+  ros::Subscriber pc_sub_;        // subscriber listening for pointcloud  
+  ros::Publisher pc_pub;          // publisher 
+  PointCPtr cloud_ptr_;           // pointer to pointcloud from ROS messages
+  PointCPtr filtered_cloud_ptr_;  //
+  sensor_msgs::PointCloud2 filtered_cloud_msg;  // ROS pointcloud message
 
   // TF2
   tf2_ros::Buffer tf_buffer_;
@@ -218,22 +231,27 @@ private:
   std::string base_frame_ = "panda_link0";  // robot base
   std::string camera_frame_ = "color";      // camera
 
-  // Gripper (dimensions in hand.xacro)
+  // MODIFY FOR T3 ANY SIZE = TRUE
+  // Gripper dimensions 
   double gripper_open_ = 0.08;       // 80 mm 
-  double gripper_closed_ = 0.01;     // 10 mm
+  double gripper_closed_ = 0.038;    // 38 mm (object width = 40mm)
   double fingertip_offset = 0.0584;  // 58.4 mm
 
   // Home pose (when node starts)
   geometry_msgs::PoseStamped home_pose_;
 
+  // MoveIt scaling
+  double def_vel_scal = 0.5;
+  double def_accel_scal = 0.5;
+
   // MoveIt default goal tolerances
-  double def_joint_tol = 0.01;   // 0.01 rad (~0.6 deg) per joint
+  double def_joint_tol = 0.01;   // 0.01 rad 
   double def_pos_tol = 0.01;     // 10 mm
   double def_orient_tol = 0.01;  // 0.01 rad 
+  std::vector<double> def_tolerances = {0.01, 0.01, 0.01};  // [joint, position, orientation]
 
   // Camera resolution
   double resolution = 0.0028;  // mm per pixel
-  double angle = 0.0;
 };
 
 #endif // end of include guard for cw2_CLASS_H_

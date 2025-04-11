@@ -10,9 +10,8 @@ solution is contained within the cw2_team_<your_team_number> package */
 cw2::cw2(ros::NodeHandle nh):
   tf_buffer_(ros::Duration(15)),
   tf_listener_(tf_buffer_),
-  g_cloud_ptr(new PointC),
-  g_cloud_filtered(new PointC),
-  cloud_ptr_(new pcl::PointCloud<pcl::PointXYZRGBA>())
+  cloud_ptr_(new PointC),
+  filtered_cloud_ptr_(new PointC)
 {
   /* Class constructor */
 
@@ -28,28 +27,28 @@ cw2::cw2(ros::NodeHandle nh):
   t3_service_  = nh_.advertiseService("/task3_start",
     &cw2::t3_callback, this);
   
-  // MoveIt planning parameters (joint-space planning only)
-  arm_group_.setPlanningTime(260);            
+  // MoveIt planning parameters
+  arm_group_.setPlanningTime(120);            
   arm_group_.setNumPlanningAttempts(2000); 
-  arm_group_.allowReplanning(true);           
+  arm_group_.allowReplanning(true);     
+  
+  // MoveIt execution parameters
+  arm_group_.setMaxVelocityScalingFactor(def_vel_scal);        // 0.5
+  arm_group_.setMaxAccelerationScalingFactor(def_accel_scal);  // 0.5
 
-  // MoveIt execution parameters (both Cartesian & joint-space planning)
-  arm_group_.setMaxVelocityScalingFactor(0.5); 
-  hand_group_.setMaxVelocityScalingFactor(0.5); 
-
-  // Default goal tolerances (both Cartesian & joint-space planning)
-  arm_group_.setGoalJointTolerance(def_joint_tol);        // 0.01 rad (~0.6 deg) per joint      
+  // Default goal tolerances
+  arm_group_.setGoalJointTolerance(def_joint_tol);        // 0.01 rad per joint      
   arm_group_.setGoalPositionTolerance(def_pos_tol);       // 10 mm 
   arm_group_.setGoalOrientationTolerance(def_orient_tol); // 0.01 rad
 
   // Home pose
   home_pose_ = arm_group_.getCurrentPose(); 
 
+
   // Initialize pointcloud subscriber & publisher
   pc_sub_ = nh_.subscribe<sensor_msgs::PointCloud2>(
     "/r200/camera/depth_registered/points", 1, &cw2::pointCloudCallback, this);
-  g_pub_cloud = nh_.advertise<sensor_msgs::PointCloud2> ("cw2/filtered_cloud", 1, true);
-  ROS_INFO("cw2 class initialised");
+  pc_pub = nh_.advertise<sensor_msgs::PointCloud2> ("cw2/filtered_cloud", 1, true);
 
   ROS_INFO("cw2 class initialised");
 }
@@ -63,192 +62,221 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   ROS_INFO("The coursework solving callback for task 1 has been triggered");
 
-  // i. Extract inputs
+  // 1. Extract inputs
   geometry_msgs::PointStamped object_point = request.object_point;
   std::string shape_type = request.shape_type;
   geometry_msgs::PointStamped goal_point = request.goal_point;
 
-  // ii. Lift arm to get larger FoV
+  // Check if object & basket are in diagonally oppopsite quadrants
+  bool is_diagonal = (object_point.point.x * goal_point.point.x < 0) &&  // opposite x signs
+                      (object_point.point.y * goal_point.point.y < 0);   // opposite y signs
+
+  // // Check orientation
+  // geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+  // current_pose.header = base_frame_;
+  // double roll, pitch, yaw;
+  // tf2::getEulerYPR(current_pose.pose.orientation, yaw, pitch, roll);
+  // ROS_INFO("Roll: %.3f, Pitch: %.3f, Yaw: %.3f (rad)", roll, pitch, yaw);
+  // // Roll: 3.140, Pitch: 0.002, Yaw: -0.785
+
+  // Add return to home for helpers that fail more often
+
+  // 2. Move the arm above the object
+  ROS_DEBUG("Moving above the object...");
+  if (!moveAboveObject(object_point, 0.004, {0.005, 0.01, 0.005})) {
+    ROS_ERROR("Failed to move above the object.");
+    return true;
+  }
+
+  // 3. Raise the arm to get larger FoV
+  geometry_msgs::PoseStamped fov_pose = arm_group_.getCurrentPose();
+  fov_pose.pose.position.z = object_point.point.z + 0.75;
   ROS_DEBUG("Lifting the arm...");
-  if (!liftArm(object_point)) {
-  ROS_ERROR("Failed to lift arm.");
-  return true;
+  if (!moveArmUpDown(fov_pose, "raiseArmToLargerFOV", 0.002, {0.005, 0.01, 0.005})) {
+    ROS_ERROR("Failed to raise the arm.");
+    return true;
   }
-  ROS_DEBUG("Lifted the arm.");
-  
-  // iii. Move the arm to above the object
-  ROS_DEBUG("Moving above object...");
-  if (!moveAboveObject(object_point, shape_type)) {
-  ROS_ERROR("Failed to move above offset.");
-  return true;
-  }
-  ROS_DEBUG("Reached above object.");
 
-  // Allow some time to process updated pointcloud
-  ros::Duration(2.0).sleep(); 
+  // Allow some time to process the pointcloud
+  ros::AsyncSpinner spinner(2);
+  spinner.start();
+  ros::Duration(1.5).sleep();
   object_point.header.stamp = ros::Time::now();
-  ros::spinOnce();
-  ros::Duration(0.2).sleep();
-  ros::spinOnce();
-  ros::Duration(0.2).sleep();
+  ros::Duration(1.5).sleep();
+  spinner.stop();
 
-  // --------------------------------------------------------------------------------
-  // Calculate orientation from object cluster
-  
-  // Convert the object point to a PoseStamped message
-  geometry_msgs::PoseStamped object_pose = pointStampedToPoseStamped(object_point);
+  // 4. Calculate orientation from object cluster------------------------------------------
 
-  // Extract object from pointcloud (cluster)
-  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cluster = getObjectCluster(object_point);
+  // i. Extract object cluster
+  PointCPtr cluster = getObjectCluster(object_point);
   if (!cluster || cluster->empty()) {
     ROS_ERROR("Failed to extract object cluster.");
-    return false;
+    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  // e.g.) 0 points along z-axis
+    return true;
   }
 
-  // Convert cluster to binary image
-  cv::Mat binaryImg = clusterToBinaryImage(cluster, resolution);
+  // ii. Convert cluster to binary image
+  cv::Mat binaryImg = clusterToBinaryImg(cluster, resolution);
   if (binaryImg.empty()) {
     ROS_ERROR("Binary image is empty!");
-    return false;
+    return true;
   }
 
-  // Extract contours from the binary image
+  // Debug: show binary image
+  std::string package_path = ros::package::getPath("cw2_team_16");
+  cv::imwrite(package_path + "/debug/binary.png", binaryImg);
+  ROS_INFO("Saved binary image");
+
+  // iii. Extract contour from the binary image (should be 1)
   std::vector<std::vector<cv::Point>> contours = extractContours(binaryImg);
-  ROS_INFO("Extracted %lu contours", contours.size());
-  if (contours.empty()) {
-    ROS_ERROR("No contours found.");
-    return false;
+
+  // Debug: show contour in green
+  cv::Mat ContoursImg;
+  cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
+  cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
+  cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
+  ROS_INFO("Saved image with contours");
+
+  if (contours.size() != 1) {
+    ROS_ERROR("None or more than one contour found. Try again.");  // occurs randomly
+    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});
+    return true;
   }
 
-  // Calculate centre in binary image
-  cv::Moments m = cv::moments(binaryImg, true);
-  cv::Point globalCenter;
-  if (m.m00 != 0)
-    globalCenter = cv::Point(static_cast<int>(m.m10/m.m00), static_cast<int>(m.m01/m.m00));
-  else
-    globalCenter = cv::Point(binaryImg.cols/2, binaryImg.rows/2);
-  ROS_INFO("Global center (image coordinates): [%d, %d]", globalCenter.x, globalCenter.y);
+  // iv. Map a rectangle to contour & calculate rotation
+  cv::RotatedRect contourRect = cv::minAreaRect(contours[0]); 
+  double rect_angle = contourRect.angle;
+  ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
 
-  // Select longest shape segment
-  std::vector<cv::Point> armContour = selectSegment(contours);
-  if (armContour.empty()) {
-    ROS_ERROR("No segment selected.");
-    return false;
+  // Debug: show contour in green & rotated rectangle in red
+  cv::Mat rectImg;
+  cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
+  cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
+  cv::Point2f vertices[4];
+  contourRect.points(vertices);
+  for (int i = 0; i < 4; i++) {
+    cv::line(rectImg, vertices[i], vertices[(i+1)%4], cv::Scalar(0, 0, 255), 2);
+  }
+  cv::imwrite(package_path + "/debug/rectangle.png", rectImg);
+  ROS_INFO("Saved image with rotated rectangle");
+
+  // v. Adjust angle depending on shape
+  double actual_angle = findActualAngle(shape_type, rect_angle);
+  ROS_INFO("Actual object rotation: %.2f deg", actual_angle);  // check with online protactor
+
+  // vi. Convert angle to radians
+  double new_yaw = actual_angle * CV_PI / 180.0;  
+
+  // // --------------------------------------------------------------------------------
+  
+  // 5. Lower the arm to increase dexterity (recommended when object is in corners)
+  geometry_msgs::PoseStamped adjust_pose = arm_group_.getCurrentPose();
+  adjust_pose.pose.position.z -= 0.40;
+  ROS_DEBUG("Lowering the arm...");
+  if (!moveArmUpDown(adjust_pose, "lowerArmToAdjust", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lower the arm");
+    return true;
   }
 
-  // Calculate orientation from contour
-  cv::RotatedRect armRect = cv::minAreaRect(armContour);  // returns rotated rectangle
-  angle = armRect.angle;  // returns angle relative to rectangle's width
-  if (armRect.size.width < armRect.size.height) {
-    angle += 90.0; 
-  } 
-  ROS_INFO("Detected arm angle: %.2f degrees", angle);
-
-  // Convert angle to radians
-  double yaw = angle * CV_PI / 180.0;
-  // --------------------------------------------------------------------------------
-
-  // 1. Adjust gripper yaw angle
-  ROS_DEBUG("Adjusting gripper's yaw...");
-  if (!adjustGripperYaw(yaw)) {
-  ROS_ERROR("Failed rotate gripper.");
+  // 6. Adjust x,y positions (grasping strategy)
+  ROS_DEBUG("Adjusting XY...");
+  if (!moveHorizontally(object_point, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01})) {
+    ROS_ERROR("Failed to adjust XY.");
+    moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
   return true;
   }
-  ROS_DEBUG("Gripper yaw adjusted successfully.");
-
-  // 2. Adjust gripper x,y positions 
-  ROS_DEBUG("Adjusting gripper's XY...");
-  if (!adjustGripperXY(object_point, shape_type, yaw)) {
-  ROS_ERROR("Failed to move gripper.");
+  ROS_DEBUG("XY adjusted successfully.");
+  
+  // 7. Adjust yaw angle (grasping strategy)
+  ROS_DEBUG("Adjusting yaw angle...");
+  if (!adjustYaw(shape_type, new_yaw, 0.4, 0.4, {0.03, 0.02, 0.05})) {
+    ROS_WARN("Arm rotation not or poorly completed.");
   return true;
   }
-  ROS_DEBUG("Gripper XY adjusted successfully.");
+  ROS_DEBUG("Yaw adjusted successfully.");
 
-  // 3. Open the gripper
-  ROS_DEBUG("Opening gripper...");
-  if (!openGripper()) {
-  ROS_ERROR("Failed to open gripper.");
-  return true;
+  // 8. Open the gripper
+  ROS_DEBUG("Opening the gripper...");
+  if (!toggleGripper(gripper_open_, "openGripper", 1.0, 1.0)) {
+    ROS_ERROR("Failed to open the gripper.");
+    return true;
   }
-  ROS_DEBUG("Gripper opened successfully.");
 
-  // 4. Lower the arm to grasp position
-  ROS_DEBUG("Lowering arm to object...");
-  if (!lowerToObject(object_point)) {  
-  ROS_ERROR("Failed to lower to object.");
-  return true;
+  // 9. Lower the arm to pick the object
+  geometry_msgs::PoseStamped pick_pose = arm_group_.getCurrentPose();
+  pick_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.08;
+  ROS_DEBUG("Lowering the arm...");
+  if (!moveArmUpDown(pick_pose, "lowerArmToPick", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lower the arm.");
+    return true;
   }
-  ROS_DEBUG("Reached grasp position.");
 
-  // 5. Close the gripper to grasp the object.
-  ROS_DEBUG("Closing gripper...");
-  if (!closeGripper()) {
-  ROS_ERROR("Failed to grasp the object.");
-  return true;
+  // 10. Close the gripper
+  ROS_DEBUG("Closing the gripper...");
+  if (!toggleGripper(gripper_closed_, "closeGripper", 0.5, 0.5)) {
+    ROS_ERROR("Failed to close the gripper.");
+    return true;
   }
-  ROS_DEBUG("Object grasped successfully.");
 
-  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
+  // note: if the gripper fails to hold the object, the arm will still execute the next steps,
   // potentially placing nothing in the basket.
 
-  // 6. Move the arm to lift the object
+  // 11. Lift the object at a safe height
+  geometry_msgs::PoseStamped lift_pose = arm_group_.getCurrentPose();
+  lift_pose.pose.position.z = goal_point.point.z + 0.33 + fingertip_offset + 0.14;
   ROS_DEBUG("Lifting the object...");
-  if (!liftObject(goal_point)) { 
-  ROS_ERROR("Failed to lift the object.");
-  return true;
+  if (!moveArmUpDown(lift_pose, "liftObject", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lift the object.");
+    return true;
   }
-  ROS_DEBUG("Object lifted successfully.");
 
-  // 7. Move the arm to pre-place offset
-  ROS_DEBUG("Moving above basket...");
-  if (!moveAboveBasket(goal_point, shape_type)) {
-  ROS_ERROR("Failed to move above basket.");
-  return true;
+  // 12. Move the arm above the basket
+  if (is_diagonal) {  // check diagonality
+    ROS_INFO("Object & basket in diagonally opposite quadrants. Rotating base joint...");
+    std::vector<double> joint_target = arm_group_.getCurrentJointValues();
+    joint_target[0] -= M_PI_2; // rotate base joint by 90 deg to simplify planning
+    arm_group_.setJointValueTarget(joint_target);
+    if (!arm_group_.move()) {
+      ROS_WARN("Base rotated with Timed_Out error.");
+    }
   }
-  ROS_DEBUG("Reached above basket.");
+  ROS_DEBUG("Moving above the basket...");
+  if (!moveHorizontally(goal_point, shape_type, new_yaw, "moveAboveBasket", 0.005, {0.02, 0.025, 0.25})) {
+    ROS_ERROR("Failed to move above the basket.");
+    moveToReadyPose(0.25, 0.25, {0.02, 0.02, 0.02});
+    return true;
+  }
 
-  // 8. Lower the arm to safe release height (Optional)
-  ROS_DEBUG("Lowering arm to safe release height...");
-  if (!lowerToBasket(goal_point)) {  
-  ROS_ERROR("Failed to lower the arm.");
-  return true;
+  // 13. Lower the arm to safe release height
+  geometry_msgs::PoseStamped release_pose = arm_group_.getCurrentPose();
+  release_pose.pose.position.z = goal_point.point.z + 0.05 + fingertip_offset + 0.25;
+  ROS_DEBUG("Lowering the object...");
+  if (!moveArmUpDown(release_pose, "releasePose", 0.002, {0.025, 0.03, 0.3})) {
+    ROS_WARN("Failed to lower the object at safe height."); 
+    // return true;  // often acceptable
   }
-  ROS_DEBUG("Reached safe release height.");
 
-  // 9. Release object into the basket.
-  ROS_DEBUG("Releasing object into the basket...");
-  if (!releaseObject()) {
-  ROS_ERROR("Failed to release object.");
-  return true;
+  // 14. Release object into the basket.
+  ROS_DEBUG("Releasing the gripper...");
+  if (!toggleGripper(gripper_open_, "releaseObject", 1.0, 1.0)) {
+    ROS_ERROR("Failed to release the object.");
+    return true;
   }
-  ROS_DEBUG("Object released successfully.");
 
-  // 10. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
-  arm_group_.setMaxVelocityScalingFactor(1); 
-  hand_group_.setMaxVelocityScalingFactor(1); 
-  arm_group_.setGoalJointTolerance(0.05);     
-  arm_group_.setGoalPositionTolerance(0.03);   
-  arm_group_.setGoalOrientationTolerance(0.05);
-  arm_group_.stop();
-  arm_group_.clearPoseTargets();
-  arm_group_.setNamedTarget("ready");
-  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_INFO("Returned to 'ready' position successfully.");
-  } else {
-    ROS_WARN("Failed to move to 'ready' position.");
+  // 15. Return to home
+  ros::Duration(0.5).sleep();
+  ROS_DEBUG("Returning back to 'ready'...");
+  if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
+    ROS_WARN("Back to 'ready' (ignore time error if successfully reached.)");
+    return true;
   }
-  arm_group_.setMaxVelocityScalingFactor(0.5); 
-  hand_group_.setMaxVelocityScalingFactor(0.5); 
-  arm_group_.setGoalJointTolerance(def_joint_tol);  
-  arm_group_.setGoalPositionTolerance(def_pos_tol);            
-  arm_group_.setGoalOrientationTolerance(def_orient_tol);
 
   ROS_INFO("Task 1 completed successfully.");
 
   return true;
 }
 
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool
 cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
@@ -278,12 +306,12 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   // Filter the point cloud to remove color other than red , blue, and purple
 
   // Segment the point cloud into objects
-  colorFilter(g_cloud_ptr, g_cloud_filtered);
+  colorFilter(cloud_ptr_, filtered_cloud_ptr_);
   clusters.clear();
   merged_objects.clear();
-  segmentObjectsWithOpenCV(g_cloud_filtered, clusters);
-  updateMergedObjectsFromSingleView(clusters);
-  mergeNearbyMergedObjectsWithPriorityVoting();
+  segmentObject(filtered_cloud_ptr_, clusters);
+  updateMergedObjects(clusters);
+  refineObjectMerging();
 
   // Check if any objects were detected
   if (merged_objects.empty()) {
@@ -305,13 +333,13 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   ros::Duration(2.0).sleep();
 
   // Filter the point cloud to remove color other than red , blue, and purple
-  colorFilter(g_cloud_ptr, g_cloud_filtered);
+  colorFilter(cloud_ptr_, filtered_cloud_ptr_);
 
   // Segment the point cloud into objects
   merged_objects.clear();
-  segmentObjectsWithOpenCV(g_cloud_filtered, clusters);
-  updateMergedObjectsFromSingleView(clusters);
-  mergeNearbyMergedObjectsWithPriorityVoting();
+  segmentObject(filtered_cloud_ptr_, clusters);
+  updateMergedObjects(clusters);
+  refineObjectMerging();
 
   // Check if any objects were detected
   if (merged_objects.empty()) {
@@ -361,7 +389,7 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 }
 
 
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool
 cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
@@ -421,14 +449,14 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     ros::Duration(1.5).sleep();
   
 
-    colorFilter(g_cloud_ptr, g_cloud_filtered);
+    colorFilter(cloud_ptr_, filtered_cloud_ptr_);
     std::vector<PointCPtr> clusters;
-    segmentObjectsWithOpenCV(g_cloud_filtered, clusters);
-    updateMergedObjectsFromSingleView(clusters);
+    segmentObject(filtered_cloud_ptr_, clusters);
+    updateMergedObjects(clusters);
   }
 
-  mergeNearbyMergedObjectsWithPriorityVoting();
-  finalizeVotingResults();
+  refineObjectMerging();
+  determineObjectFromVotes();
 
   // 2.print and count all detected objects 
   int cross_count = 0;
@@ -521,266 +549,37 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     basket_obj = &default_basket_obj;
 
   }
-
-
   ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f)", target->shape.c_str(),
            target->center_x, target->center_y);
   ROS_INFO("Basket position: (%.3f, %.3f)", basket_obj->center_x, basket_obj->center_y);
 
-  // Step 5: Move above target object
 
-  // Pick point (~object point)
-  geometry_msgs::PointStamped pick_point;
-  pick_point.header.frame_id = base_frame_;
-  pick_point.point.x = target->center_x - 0.045; // manual offset between actual & observed coordinate
-  pick_point.point.y = target->center_y;
-  pick_point.point.z = 0.0;
-
-  // Drop point (~goal point)
-  geometry_msgs::PointStamped drop_point;
-  drop_point.header.frame_id = base_frame_;
-  drop_point.point.x = basket_obj->center_x - 0.045;
-  drop_point.point.y = basket_obj->center_y;
-  drop_point.point.z = 0.0; 
-
-  ROS_DEBUG("Lifting the arm...");
-  if (!liftArm(pick_point)) {
-  ROS_ERROR("Failed to lift arm.");
-  return true;
-  }
-  ROS_DEBUG("Lifted the arm.");
-
-  ROS_DEBUG("Moving above object...");
-  if (!moveAboveObject(pick_point, "")) {
-  ROS_ERROR("Failed to move above offset.");
-  return true;
-  }
-  ROS_DEBUG("Reached above object.");
-
-  // Allow some time to process updated pointcloud
-  ros::Duration(2.0).sleep(); 
-  pick_point.header.stamp = ros::Time::now();
-  ros::spinOnce();
-  ros::Duration(0.2).sleep();
-  ros::spinOnce();
-  ros::Duration(0.2).sleep();
-
-  // --------------------------------------------------------------------------------
-  // Calculate orientation from object cluster
-  
-  // Convert the object point to a PoseStamped message
-  geometry_msgs::PoseStamped object_pose = pointStampedToPoseStamped(pick_point);
-
-  // Extract object from pointcloud (cluster)
-  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cluster = getObjectCluster(pick_point);
-  if (!cluster || cluster->empty()) {
-    ROS_ERROR("Failed to extract object cluster.");
-    return false;
-  }
-
-  // Convert cluster to binary image
-  cv::Mat binaryImg = clusterToBinaryImage(cluster, resolution);
-  if (binaryImg.empty()) {
-    ROS_ERROR("Binary image is empty!");
-    return false;
-  }
-
-  // Extract contours from the binary image
-  std::vector<std::vector<cv::Point>> contours = extractContours(binaryImg);
-  ROS_INFO("Extracted %lu contours", contours.size());
-  if (contours.empty()) {
-    ROS_ERROR("No contours found.");
-    return false;
-  }
-
-  // Calculate centre in binary image
-  cv::Moments m = cv::moments(binaryImg, true);
-  cv::Point globalCenter;
-  if (m.m00 != 0)
-    globalCenter = cv::Point(static_cast<int>(m.m10/m.m00), static_cast<int>(m.m01/m.m00));
-  else
-    globalCenter = cv::Point(binaryImg.cols/2, binaryImg.rows/2);
-  ROS_INFO("Global center (image coordinates): [%d, %d]", globalCenter.x, globalCenter.y);
-
-  // Select longest shape segment
-  std::vector<cv::Point> armContour = selectSegment(contours);
-  if (armContour.empty()) {
-    ROS_ERROR("No segment selected.");
-    return false;
-  }
-
-  // Calculate orientation from contour
-  cv::RotatedRect armRect = cv::minAreaRect(armContour);  // returns rotated rectangle
-  angle = armRect.angle;  // returns angle relative to rectangle's width
-  if (armRect.size.width < armRect.size.height) {
-    angle += 90.0; 
-  } 
-  ROS_INFO("Detected arm angle: %.2f degrees", angle);
-
-  // Convert angle to radians
-  double yaw = angle * CV_PI / 180.0;
-  // --------------------------------------------------------------------------------
-
-  // 1. Adjust gripper yaw angle
-  ROS_DEBUG("Adjusting gripper's yaw...");
-  if (!adjustGripperYaw(yaw)) {
-  ROS_ERROR("Failed rotate gripper.");
-  return true;
-  }
-  ROS_DEBUG("Gripper yaw adjusted successfully.");
-
-  // 2. Adjust gripper x,y positions 
-  ROS_DEBUG("Adjusting gripper's XY...");
-  if (!adjustGripperXY(pick_point, "", yaw)) {
-  ROS_ERROR("Failed to move gripper.");
-  return true;
-  }
-  ROS_DEBUG("Gripper XY adjusted successfully.");
-
-  // 3. Open the gripper
-  ROS_DEBUG("Opening gripper...");
-  if (!openGripper()) {
-  ROS_ERROR("Failed to open gripper.");
-  return true;
-  }
-  ROS_DEBUG("Gripper opened successfully.");
-
-  // 4. Lower the arm to grasp position
-  ROS_DEBUG("Lowering arm to object...");
-  if (!lowerToObject(pick_point)) {  
-  ROS_ERROR("Failed to lower to object.");
-  return true;
-  }
-  ROS_DEBUG("Reached grasp position.");
-
-  // 5. Close the gripper to grasp the object.
-  ROS_DEBUG("Closing gripper...");
-  if (!closeGripper()) {
-  ROS_ERROR("Failed to grasp the object.");
-  return true;
-  }
-  ROS_DEBUG("Object grasped successfully.");
-
-  // note: if the gripper fails to hold the shape, the arm will still execute steps 5–7,
-  // potentially placing nothing in the basket.
-
-  // 6. Move the arm to lift the object
-  ROS_DEBUG("Lifting the object...");
-  if (!liftObject(drop_point)) { 
-  ROS_ERROR("Failed to lift the object.");
-  return true;
-  }
-  ROS_DEBUG("Object lifted successfully.");
-
-  // 7. Move the arm to pre-place offset
-  ROS_DEBUG("Moving above basket...");
-  if (!moveAboveBasket(drop_point, "")) {
-  ROS_ERROR("Failed to move above basket.");
-  return true;
-  }
-  ROS_DEBUG("Reached above basket.");
-
-  // 8. Lower the arm to safe release height (Optional)
-  ROS_DEBUG("Lowering arm to safe release height...");
-  if (!lowerToBasket(drop_point)) {  
-  ROS_ERROR("Failed to lower the arm.");
-  return true;
-  }
-  ROS_DEBUG("Reached safe release height.");
-
-  // 9. Release object into the basket.
-  ROS_DEBUG("Releasing object into the basket...");
-  if (!releaseObject()) {
-  ROS_ERROR("Failed to release object.");
-  return true;
-  }
-  ROS_DEBUG("Object released successfully.");
-
-  // 10. Return to home position ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
-  arm_group_.setMaxVelocityScalingFactor(1); 
-  hand_group_.setMaxVelocityScalingFactor(1); 
-  arm_group_.setGoalJointTolerance(0.05);     
-  arm_group_.setGoalPositionTolerance(0.03);   
-  arm_group_.setGoalOrientationTolerance(0.05);
-  arm_group_.stop();
-  arm_group_.clearPoseTargets();
-  arm_group_.setNamedTarget("ready");
-  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_INFO("Returned to 'ready' position successfully.");
-  } else {
-    ROS_WARN("Failed to move to 'ready' position.");
-  }
-  arm_group_.setMaxVelocityScalingFactor(0.5); 
-  hand_group_.setMaxVelocityScalingFactor(0.5); 
-  arm_group_.setGoalJointTolerance(def_joint_tol);  
-  arm_group_.setGoalPositionTolerance(def_pos_tol);            
-  arm_group_.setGoalOrientationTolerance(def_orient_tol);
+  // PICK AND PLACE TASK 3
 
   ROS_INFO("Task 3 completed successfully.");
 
   return true;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Pick & place helper functions
+////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool
-cw2::liftArm(const geometry_msgs::PointStamped &object_point)
-{
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose(); 
-  
-  // Lower the arm (add margin for table height)
-  current_pose.pose.position.z = object_point.point.z + 0.75;
+// ROBOT MOTION helpers
 
-  // Create a waypoint vector for Cartesian path planning
-  std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(current_pose.pose);
-  
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "liftArm")) {
-    ROS_ERROR("liftArm: Motion failed after multiple attempts.");
-    return false;
-  }
-  ROS_INFO("liftArm: Arm lifted.");
-  return true;
-}
-
-// ----------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------
 bool
 cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
-                    const std::string &shape_type)
+                    double eef_step,
+                    std::vector<double> tolerances)
 {
   // Get the current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-
-  // Define above_object_pose pose
+  
+  // Calculate above_object_pose position
   geometry_msgs::PoseStamped above_object_pose;
   above_object_pose.header = object_point.header; 
 
-  // Calculate position (centered about object)
-
-  // // T1 ANY ORIENTATION = False
-  // above_object_pose.pose.position.x = object_point.point.x;  // for grasping
-  // above_object_pose.pose.position.y = object_point.point.y;  // for grasping
-  // above_object_pose.pose.position.z = current_pose.pose.position.z;  // high enough when "ready"
-
-  // Add x-y offsets according to shape (grasping strategy)
-  // if (shape_type == "nought") {
-  //   above_object_pose.pose.position.y += 0.08;
-  // }
-  // else if (shape_type == "cross") {
-  //   above_object_pose.pose.position.x += 0.06;
-  // }
-
-  // T1 ANY ORIENTATION = True
-  // Transform object_point to camera frame
-  geometry_msgs::PointStamped object_cam_frame;
   try {
-  object_cam_frame = tf_buffer_.transform(object_point,
-                                          camera_frame_,
-                                          ros::Duration(1.0));
-
     // Get the camera pose in the same frame as object_point (base frame)
     geometry_msgs::PoseStamped camera_pose;
     camera_pose.header.frame_id = camera_frame_;
@@ -789,31 +588,31 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
                                       object_point.header.frame_id,
                                       ros::Duration(1.0));
 
-    // Offset EE pose to center camera over object
-    above_object_pose.pose.position.x = current_pose.pose.position.x + (object_point.point.x - camera_pose.pose.position.x);
-    above_object_pose.pose.position.y = current_pose.pose.position.y + (object_point.point.y - camera_pose.pose.position.y);
+    // Calculate position by offseting the arm to center camera about the object
+    above_object_pose.pose.position.x = current_pose.pose.position.x + object_point.point.x - camera_pose.pose.position.x;
+    above_object_pose.pose.position.y = current_pose.pose.position.y + object_point.point.y - camera_pose.pose.position.y;
     above_object_pose.pose.position.z = current_pose.pose.position.z;
 
   } catch (tf2::TransformException &ex) {
     ROS_WARN("Failed to transform object point to camera frame: %s", ex.what());
   }
 
-  // Calculate orientation
+  // Calculate above_object_pose orientation (top-down view)
   tf2::Quaternion q;
-  q.setRPY(0.0, M_PI, M_PI_4 + M_PI_2);  // roll, pitch, yaw (top-down view)
+  q.setRPY(0.0, M_PI, 3 * M_PI_4);  // roll, pitch, yaw
   above_object_pose.pose.orientation = tf2::toMsg(q);
 
   // Set specific tolerances
-  arm_group_.setGoalJointTolerance(0.05);       // 0.05 rad (~2.8 deg) per joint
-  arm_group_.setGoalPositionTolerance(0.03);    // 30 mm
-  arm_group_.setGoalOrientationTolerance(0.07); // 0.07 rad (~4 deg)
+  arm_group_.setGoalJointTolerance(tolerances[0]);
+  arm_group_.setGoalPositionTolerance(tolerances[1]);
+  arm_group_.setGoalOrientationTolerance(tolerances[2]);
 
   // Create a waypoint vector
   std::vector<geometry_msgs::Pose> waypoints;
   waypoints.push_back(above_object_pose.pose);
 
   // Execute Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "moveAboveObject")) {
+  if (!planAndExecuteCartesian(waypoints, "moveAboveObject", eef_step)) {
     ROS_ERROR("moveAboveObject: Motion failed after multiple attempts.");
     // No need to reset default parameters & tolerances (already reset in helper)
     return false;
@@ -821,354 +620,298 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
   return true;
 }
 
-// ----------------------------------------------------------------------------
-bool
-cw2::adjustGripperYaw(double yaw)
+// -------------------------------------------------------------------------------------------
+bool 
+cw2::moveArmUpDown(const geometry_msgs::PoseStamped &target_pose,
+                  const std::string &action_name,
+                  double eef_step,
+                  std::vector<double> tolerances)
 {
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+  // Set specific tolerances
+  arm_group_.setGoalJointTolerance(tolerances[0]);
+  arm_group_.setGoalPositionTolerance(tolerances[1]);
+  arm_group_.setGoalOrientationTolerance(tolerances[2]);
 
-  // Convert current orientation to RPY
-  tf2::Quaternion q_current;
-  tf2::fromMsg(current_pose.pose.orientation, q_current);
-  double roll, pitch, current_yaw;
-  tf2::Matrix3x3(q_current).getRPY(roll, pitch, current_yaw);
+  // Create a waypoint vector
+  std::vector<geometry_msgs::Pose> waypoints;
+  waypoints.push_back(target_pose.pose);
 
-  // Adjustment threshold 
-  if (std::abs(yaw) <= 0.17 || std::abs(std::abs(yaw) - M_PI/2) <= 0.01) { 
-    ROS_INFO("Yaw (%.2f deg) is small or close to 90 deg. - keeping current orientation", 
-              std::abs(yaw) * 180.0 / M_PI);  // in degrees
-    return true; 
-    }
-
-  // Create new quaternion with same roll/pitch but new yaw
-  tf2::Quaternion q_new;
-  q_new.setRPY(roll, pitch, yaw); 
-  // q_new.setRPY(roll, pitch, yaw-M_PI/4);  // remove 45 deg
-  q_new.normalize();
-  
-  // Set the new orientation
-  current_pose.pose.orientation = tf2::toMsg(q_new);
-
-  // Set specific parameters
-  arm_group_.setMaxVelocityScalingFactor(1); 
-  hand_group_.setMaxVelocityScalingFactor(1); 
-  arm_group_.setGoalJointTolerance(0.05);        // 0.05 rad (~2.8 deg) per joint
-  arm_group_.setGoalOrientationTolerance(0.088); // 0.088 rad (~5 deg)
-
-  // Joint-space planning
-  arm_group_.setPoseTarget(current_pose);
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  
-  // // Plan & execute
-  // bool success = (arm_group_.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) && 
-  //                (arm_group_.execute(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-
-  // // Reset default parameters
-  // arm_group_.setMaxVelocityScalingFactor(0.5); 
-  // hand_group_.setMaxVelocityScalingFactor(0.5); 
-  // arm_group_.setGoalJointTolerance(def_joint_tol);
-  // arm_group_.setGoalOrientationTolerance(def_orient_tol);
-
-  // if (!success) {
-  //   ROS_WARN("Joint-space planning/execution failed.");
-  //   return false;
-  // }
-  // return true;
-
-  // Plan & execute
-  bool success = (arm_group_.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-  if (success) {
-    try {
-      arm_group_.execute(plan);
-      ROS_INFO("Gripper yaw adjustment executed successfully.");
-    } catch (const std::exception& e) {
-      ROS_WARN("Gripper yaw adjustment execution caught exception: %s", e.what());
-    }
-  } else {
-    ROS_WARN("Gripper yaw adjustment not completed, but continuing anyway.");
+  // Execute the Cartesian path
+  if (!planAndExecuteCartesian(waypoints, action_name, eef_step)) {
+    ROS_ERROR("%s failed after multiple attempts.", action_name.c_str());
+    // No need to reset default parameters & tolerances (already reset in helper)
+    return false;
   }
-
-  // Reset default tolerances
-  arm_group_.setMaxVelocityScalingFactor(0.5); 
-  hand_group_.setMaxVelocityScalingFactor(0.5); 
-  arm_group_.setGoalJointTolerance(def_joint_tol);
-  arm_group_.setGoalOrientationTolerance(def_orient_tol);
-
+  
+  ROS_INFO("%s successful.", action_name.c_str());
   return true;
 }
 
-// ----------------------------------------------------------------------------
-bool 
-cw2::adjustGripperXY(const geometry_msgs::PointStamped &object_point,
-                    const std::string &shape_type,
-                    double yaw)
+// -------------------------------------------------------------------------------------------
+bool
+cw2::moveHorizontally(const geometry_msgs::PointStamped &point,
+                      const std::string &shape_type,
+                      double new_yaw,
+                      const std::string &action_name,
+                      double eef_step,
+                      std::vector<double> tolerances)
 {
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
 
-  // Default offsets
+  // Get current pose
+  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
+  current_pose.header = point.header; 
+
+  // Define offsets
   double x_offset = 0.0;
   double y_offset = 0.0;
 
-  // Check if either nought or cross
-  if (shape_type == "nought") {
-    // Check if yaw < ~11.5 degrees or close to 90 degrees
-    if (std::abs(yaw) <= 0.17 || std::abs(std::abs(yaw) - M_PI/2) <= 0.01) {
-      // Apply default Y offset for noughts
-      y_offset = 0.08;
-      ROS_INFO("Applying default Y offset for nought (yaw: %.2f deg)", yaw * 180.0 / M_PI);
-    } else {
-      // Apply rotated offsets
-      x_offset = 0.08 * sin(yaw);
-      y_offset = 0.08 * cos(yaw);
-      ROS_INFO("Applying rotated offsets for nought (yaw: %.2f deg)", yaw * 180.0 / M_PI);
+  // Thresholds 
+  bool is_yaw_small = (std::abs(new_yaw) <= 0.088);  // (0.088 rad ~ 5 deg)
+  bool is_yaw_pos = (new_yaw >= 0.0);                // counter-clockwise 
+
+  // Define offsets (pick-and-place strategy)
+  if (shape_type == "nought") { 
+    if (is_yaw_small) {  // no need to account for rotation when angle < 5 deg. (linear offset)
+      y_offset = 0.08;  
+    } else {             // apply rotated offsets      
+      if (is_yaw_pos) {
+        x_offset = - 0.08 * sin(new_yaw);  
+        y_offset = 0.08 * cos(new_yaw);    // counter-clockwise -> positive y-direction
+      } else {
+        x_offset = 0.08 * sin(new_yaw);
+        y_offset = - 0.08 * cos(new_yaw);  // clockwise -> negative y-direction
+
+      }
     }
   } 
-  else {
-    // Check if yaw < ~11.5 degrees or close to 90 degrees
-    if (std::abs(yaw) <= 0.17 || std::abs(std::abs(yaw) - M_PI/2) <= 0.01) {
-      // Apply default X offset for crosses
-      x_offset = 0.065;
-      ROS_INFO("Applying default X offset for cross (yaw: %.2f deg)", yaw * 180.0 / M_PI);
+  else if (shape_type == "cross") {  // same strategy but with smaller offsets
+    if (is_yaw_small) {
+      x_offset = 0.055;
     } else {
-      // Apply rotated offsets
-      x_offset = 0.065 * cos(yaw);
-      y_offset = -0.065 * sin(yaw);
-      ROS_INFO("Applying rotated offsets for cross (yaw: %.2f deg)", yaw * 180.0 / M_PI);
+      if (is_yaw_pos) {
+        x_offset = -0.058 * sin(new_yaw);
+        y_offset = 0.058 * cos(new_yaw);
+      } else {
+        x_offset = 0.058 * sin(new_yaw);
+        y_offset = - 0.058 * cos(new_yaw);
+      }
     }
   }
 
-  // Apply the offsets
-  current_pose.pose.position.x = object_point.point.x + x_offset;
-  current_pose.pose.position.y = object_point.point.y + y_offset;
+  // Apply the offsets 
+  current_pose.pose.position.x = point.point.x + x_offset;
+  current_pose.pose.position.y = point.point.y + y_offset;
 
   // Set specific tolerances
-  arm_group_.setGoalJointTolerance(0.05);     
-  arm_group_.setGoalPositionTolerance(0.05);  
-  arm_group_.setGoalOrientationTolerance(0.05); 
-
-  // Create a waypoint vector for Cartesian path planning
-  std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(current_pose.pose);
-  
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "adjustGripperXY")) {
-    ROS_ERROR("adjustGripperXY: Motion failed after multiple attempts.");
-    // No need to reset default parameters & tolerances (already reset in helper)
-    return false;
-  }
-  
-  ROS_INFO("adjustGripperXY: Adjusted gripper's x,y positions.");
-  return true;
-}
-
-// ----------------------------------------------------------------------------
-bool
-cw2::openGripper()
-{
-  ROS_INFO("openGripper: Opening the gripper...");
-  double width = gripper_open_;  // predefined
-  double eachJoint = width / 2.0;
-  
-  std::vector<double> gripperJointTargets(2, eachJoint);
-  hand_group_.setJointValueTarget(gripperJointTargets);
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  
-  if (hand_group_.plan(plan) != moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_ERROR("openGripper: Opening failed.");
-    return false;
-  }
-  hand_group_.move();
-  ros::Duration(0.5).sleep();
-  ROS_INFO("openGripper: Gripper opened.");
-  return true;
-}
-
-// ----------------------------------------------------------------------------
-bool
-cw2::lowerToObject(const geometry_msgs::PointStamped &object_point)
-{
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-  
-  // Lower the arm (add margin for table height)
-  current_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.08;
-
-  // Create a waypoint vector for Cartesian path planning
-  std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(current_pose.pose);
-  
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "lowerToObject")) {
-    ROS_ERROR("lowerToObject: Motion failed after multiple attempts.");
-    // No need to reset default parameters & tolerances (already reset in helper)
-    return false;
-  }
-  
-  ROS_INFO("lowerToObject: Reached grasp position.");
-  return true;
-}
-
-// ----------------------------------------------------------------------------
-bool
-cw2::closeGripper()
-{
-  ROS_INFO("closeGripper: Closing the gripper...");
-  double width = gripper_closed_;  // predefined
-  double eachJoint = width / 2.0;
-
-  std::vector<double> gripperJointTargets(2, eachJoint);
-  hand_group_.setJointValueTarget(gripperJointTargets);
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  
-  if (hand_group_.plan(plan) != moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_ERROR("closeGripper: Closing failed.");
-    return false;
-  }
-  hand_group_.move();
-  ros::Duration(0.5).sleep();
-  ROS_INFO("closeGripper: Gripper closed.");
-  return true;
-}
-
-// ----------------------------------------------------------------------------
-bool
-cw2::liftObject(const geometry_msgs::PointStamped &goal_point)
-{
-  // Get the current arm pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-
-  // Lift the arm high enough to avoid collisions
-  current_pose.pose.position.z = goal_point.point.z + 0.33 + fingertip_offset + 0.20;
-
-  // Create a waypoint vector for Cartesian path planning
-  std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(current_pose.pose);
-
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "raiseFromObject")) {
-    ROS_ERROR("raiseFromObject: Motion failed after multiple attempts.");
-    // No need to reset default parameters & tolerances (already reset in helper)
-    return false;
-  }
-  
-  ROS_INFO("raiseFromObject: Object lifted successfully.");
-  return true;
-}
-
-// // ----------------------------------------------------------------------------
-bool
-cw2::moveAboveBasket(const geometry_msgs::PointStamped &goal_point,
-                    const std::string &shape_type)
-{
-
-  // Get the current pose
-  geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-  
-  // Calculate pre-place pose
-  geometry_msgs::PoseStamped pre_place_pose;
-  pre_place_pose.header = goal_point.header;  
-  pre_place_pose.pose.position.x = goal_point.point.x;
-  pre_place_pose.pose.position.y = goal_point.point.y;
-  pre_place_pose.pose.position.z = current_pose.pose.position.z; 
-  pre_place_pose.pose.orientation = current_pose.pose.orientation;
-
-  // Add x-y offsets to place object in centre of basket
-  if (shape_type == "nought") {
-    pre_place_pose.pose.position.y += 0.08;
-  }
-  else if (shape_type == "cross") {
-    pre_place_pose.pose.position.x += 0.065;
-  }
-
-  // Set specific tolerances
-  arm_group_.setGoalJointTolerance(0.05);        // 0.05 rad (~3 deg) per joint
-  arm_group_.setGoalPositionTolerance(0.07);     // 60 mm 
-  arm_group_.setGoalOrientationTolerance(0.25);  // 0.1 rad (~14 deg)
+  arm_group_.setGoalJointTolerance(tolerances[0]);
+  arm_group_.setGoalPositionTolerance(tolerances[1]);
+  arm_group_.setGoalOrientationTolerance(tolerances[2]);
 
   // Create a waypoint vector for CARTESIAN path planning
   std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(pre_place_pose.pose);
+  waypoints.push_back(current_pose.pose);
 
   // Execute Cartesian paths
-  if (!planAndExecuteCartesian(waypoints, "moveAboveBasket")) {
-    ROS_ERROR("moveAboveBasket: Motion failed after multiple attempts.");
+  if (!planAndExecuteCartesian(waypoints, action_name, eef_step)) {
+    ROS_ERROR("%s: Motion failed after multiple attempts.", action_name.c_str());
     // No need to reset default parameters & tolerances (already reset in helper)
     return false;
   }
   return true;
 }
-
-// ----------------------------------------------------------------------------
+// -------------------------------------------------------------------------------------------
 bool
-cw2::lowerToBasket(const geometry_msgs::PointStamped &goal_point)
+cw2::moveToReadyPose(double velocity_scaling,
+                    double accel_scaling,
+                    std::vector<double> tolerances)  
 {
-  // Get the current arm pose
+  // ("ready" position defined at /panda_moveit_config/config/panda_arm.xacro)
+
+  bool success = false;
+
+  try {
+    // Stop motion & clear targets
+    arm_group_.stop();
+    arm_group_.clearPoseTargets();
+    arm_group_.setNamedTarget("ready");
+
+    // Set velocity & acceleration scaling
+    arm_group_.setMaxVelocityScalingFactor(velocity_scaling); 
+    arm_group_.setMaxAccelerationScalingFactor(accel_scaling);
+
+    // Set tolerances
+    arm_group_.setGoalJointTolerance(tolerances[0]);
+    arm_group_.setGoalPositionTolerance(tolerances[1]);
+    arm_group_.setGoalOrientationTolerance(tolerances[2]);
+
+    // Joint-space motion
+    if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+      ROS_INFO("Returned to ready.");
+      success = true;
+    } else {
+      ROS_WARN("Returned to ready with Timed_Out error.");
+      success = true; 
+    }
+  }
+  catch(const std::exception& e) {
+    ROS_ERROR("Exception in moveToReadyPose: %s", e.what());
+    success = false;
+  }
+
+  // Reset default MoveIt parameters & tolerances (check class constructor)
+  arm_group_.setMaxVelocityScalingFactor(def_vel_scal); 
+  arm_group_.setMaxAccelerationScalingFactor(def_accel_scal); 
+
+  arm_group_.setGoalJointTolerance(def_joint_tol);  
+  arm_group_.setGoalPositionTolerance(def_pos_tol);            
+  arm_group_.setGoalOrientationTolerance(def_orient_tol);
+
+  return success;
+}
+
+// -------------------------------------------------------------------------------------------
+bool cw2::adjustYaw(const std::string &shape_type,
+  double new_yaw,
+  double velocity_scaling,
+  double accel_scaling,
+  std::vector<double> tolerances)
+{
+bool success = false;
+
+try {
+  // Get current arm pose
   geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-  
-  // Lower the arm to safe release position
-  current_pose.pose.position.z = goal_point.point.z + 0.05 + fingertip_offset + 0.25;
 
-  // Create a waypoint vector for Cartesian path planning
+  // Threshold
+  bool is_yaw_small = (std::abs(new_yaw) <= 0.088);  // (0.088 rad ~ 5 deg)
+
+  // No adjustment when angle < 5 deg.
+  if (is_yaw_small) { 
+    ROS_INFO("Keeping current orientation");
+    return true;  // exit if condition is True
+  }
+
+  // For crosses, add 90 deg. to grasp the arm with the correct orientation
+  if (shape_type == "cross"){
+    new_yaw += M_PI_2;
+  }
+
+  // Create new quaternion with the same pitch & roll but new yaw
+  tf2::Quaternion q_new;
+  q_new.setRPY(0.0, M_PI, 3*M_PI_4 + new_yaw);
+  q_new.normalize();
+
+  // Set the new orientation
+  current_pose.pose.orientation = tf2::toMsg(q_new);
+
+  // Clear targets & set target pose
+  arm_group_.clearPoseTargets();
+  arm_group_.setPoseTarget(current_pose);
+
+  // Set velocity & acceleration scaling
+  arm_group_.setMaxVelocityScalingFactor(velocity_scaling); 
+  arm_group_.setMaxAccelerationScalingFactor(accel_scaling);
+
+  // Set tolerances
+  arm_group_.setGoalJointTolerance(tolerances[0]);
+  arm_group_.setGoalPositionTolerance(tolerances[1]);
+  arm_group_.setGoalOrientationTolerance(tolerances[2]);
+
+  // Joint-space motion
+  if (arm_group_.move() == moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+    ROS_INFO("Yaw angle adjusted successfully.");
+    success = true;
+  } else {
+    ROS_WARN("Yaw adjusted with Timed_Out error.");
+    success = true;  
+  }
+}
+catch(const std::exception& e) {
+  ROS_ERROR("Exception in adjustGripperYaw: %s", e.what());
+  success = false;
+}
+
+// Reset default MoveIt parameters & tolerances
+arm_group_.setMaxVelocityScalingFactor(def_vel_scal); 
+arm_group_.setMaxAccelerationScalingFactor(def_accel_scal); 
+
+arm_group_.setGoalJointTolerance(def_joint_tol);  
+arm_group_.setGoalPositionTolerance(def_pos_tol);            
+arm_group_.setGoalOrientationTolerance(def_orient_tol);
+
+return success;
+}
+
+// -------------------------------------------------------------------------------------------
+bool 
+cw2::moveToPoseWithFallback(const geometry_msgs::PoseStamped &target_pose) {
+  geometry_msgs::PoseStamped pose_copy = target_pose;
+  /* This function is for pure moving without tolerances for picking & placing. */
+
+  // Ensure the target pose has a valid frame ID
+  if (pose_copy.header.frame_id.empty()) {
+    pose_copy.header.frame_id = "panda_link0";
+  }
+
+  // Set a default orientation if none is provided
+  const auto& q = pose_copy.pose.orientation;
+  if (q.x == 0 && q.y == 0 && q.z == 0 && q.w == 0) {
+    tf2::Quaternion q_set;
+    q_set.setRPY(0.0, M_PI, M_PI_4 + M_PI_2); // Default orientation (roll, pitch, yaw)
+    q_set.normalize();
+    pose_copy.pose.orientation = tf2::toMsg(q_set);
+  }
+
+  // Add the target pose to the waypoints for Cartesian planning
   std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(current_pose.pose);
-  
-  // Execute the Cartesian path
-  if (!planAndExecuteCartesian(waypoints, "lowerToBasket")) {
-    ROS_ERROR("lowerToBasket: Motion failed after multiple attempts.");
-    // No need to reset default parameters & tolerances (already reset in helper)
+  waypoints.push_back(pose_copy.pose);
+  arm_group_.clearPathConstraints();
+
+  bool success = false;
+
+  // Cartesian path planning
+  if (planAndExecuteCartesian(waypoints, "moveToPoseWithFallback", 0.005)) {
+    success = true;
+  } else {
+    // If Cartesian planning fails, fall back to joint-space planning
+    ROS_WARN("Cartesian planning failed, switching to joint-space planning...");
+    arm_group_.setPoseTarget(pose_copy);
+    moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
+
+    if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+      success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    }
+  }
+
+  // Check if all planning attempts failed
+  if (!success) {
+    ROS_ERROR("moveToPoseWithFallback: All planning attempts failed.");
     return false;
   }
-  
-  ROS_INFO("lowertoBasket: Object can be safely released.");
+
   return true;
 }
 
-// ----------------------------------------------------------------------------
-bool
-cw2::releaseObject()
-{
-  ROS_INFO("releaseObject: Releasing object...");
-  double width = gripper_open_; 
-  double eachJoint = width / 2.0;
-
-  std::vector<double> gripperJointTargets(2, eachJoint);
-  hand_group_.setJointValueTarget(gripperJointTargets);
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  
-  if (hand_group_.plan(plan) != moveit::planning_interface::MoveItErrorCode::SUCCESS) {
-    ROS_ERROR("releaseObject: Release failed.");
-    return false;
-  }
-  hand_group_.move();
-  ros::Duration(0.5).sleep();
-  ROS_INFO("releaseObject: Object released.");
-  return true;
-}
-
-///////////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------------------------------
 // Cartesian path planning
 
-/* 
-Approach:
-- multiple planning attempts with increasing step size
-- multiple execution attempts with pose perturbation
-- adaptive tolerance relaxation for difficult moves
-- enhanced error handling and debugging output
-
-Important parameters:
-- eef_step (EE step size); lower for smoother path, higher for faster planning but jerky motion & collision
-- path_fraction_threshold (minimum completion)
-*/
+/* Approach:
+  - multiple planning attempts with increasing step size
+  - multiple execution attempts with pose perturbation
+  - adaptive tolerance relaxation for difficult moves
+  - enhanced error handling and debugging output
+  
+  Important parameters:
+  - eef_step (EE step size); lower for smoother path, higher for faster planning but jerky motion & collision
+  - path_fraction_threshold (minimum completion) */
 
 bool
 cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
-                          const std::string &action_name)
+                            const std::string &action_name,
+                            double eef_step)
 {
   moveit_msgs::RobotTrajectory trajectory;
   int max_planning_attempts = 20;
-  double eef_step = 0.004;       // initial EE step size
 
   // Outer loop: Try planning with increasingly larger step sizes
   for (int attempt = 1; attempt <= max_planning_attempts; attempt++) {
@@ -1182,8 +925,8 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
                                                       true,           // avoid collisions (optional)
                                                       &error_code);   // error code output (optional)
     
-    // Check if it completed at least 65%
-    if (fraction >= 0.65) {
+    // Check if it completed at least 60% (motion often fails ~ 60%)
+    if (fraction >= 0.60) {
       ROS_INFO_STREAM(action_name << ": Cartesian path computed successfully with fraction " << fraction);
       int max_exec_attempts = 20;
       
@@ -1201,9 +944,9 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
           // If execution fails, try perturbing the final position (to overcome local minima)
           if (exec < max_exec_attempts && !waypoints.empty()) {
             geometry_msgs::Pose perturbed = waypoints.back();
-            perturbed.position.x += 0.005;
-            perturbed.position.y += 0.005;
-            perturbed.position.z += 0.005;
+            perturbed.position.x += 0.01;
+            perturbed.position.y += 0.01;
+            perturbed.position.z += 0.01;
             ROS_INFO_STREAM(action_name << ": Perturbing final waypoint for retry.");
             
             // Recompute path with perturbed endpoint
@@ -1259,36 +1002,92 @@ cw2::planAndExecuteCartesian(const std::vector<geometry_msgs::Pose> &waypoints,
     }
 
     // Increase the step size to reduce planning constraints
-    eef_step *= 1.5;  
+    eef_step *= 1.25;  
   }
 
   ROS_ERROR_STREAM(action_name << ": All planning attempts failed.");
   return false;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Cluster helpers
-geometry_msgs::PoseStamped
-cw2::pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt)
-{
-  geometry_msgs::PoseStamped pose;
-  pose.header = pt.header;              
-  pose.pose.position = pt.point;        
+////////////////////////////////////////////////////////////////////////////////////////////////
 
-  // Assign default orientation 
-  pose.pose.orientation.x = 0.0;
-  pose.pose.orientation.y = 0.0;
-  pose.pose.orientation.z = 0.0;
-  pose.pose.orientation.w = 1.0;
-  return pose;
+// GRIPPER helper
+
+bool
+cw2::toggleGripper(double gripper_width,
+                  const std::string &action_name,
+                  double velocity_scaling,
+                  double accel_scaling)
+{
+  double width = gripper_width; 
+  double eachJoint = width / 2.0;
+  
+  std::vector<double> gripperJointTargets(2, eachJoint);
+  hand_group_.setJointValueTarget(gripperJointTargets);
+  moveit::planning_interface::MoveGroupInterface::Plan plan;
+
+  // Set scaling
+  hand_group_.setMaxVelocityScalingFactor(velocity_scaling); 
+  hand_group_.setMaxAccelerationScalingFactor(accel_scaling); 
+  
+  bool success = false;
+
+  if (hand_group_.plan(plan) != moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+    ROS_ERROR("%s failed.", action_name.c_str());
+    success = false;
+  }
+  hand_group_.move();
+  ros::Duration(1).sleep();
+  ROS_INFO("%s successful.", action_name.c_str());
+  success = true;
+
+  // Reset scaling
+  hand_group_.setMaxVelocityScalingFactor(def_vel_scal); 
+  hand_group_.setMaxAccelerationScalingFactor(def_accel_scal); 
+
+  return success;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+// POINTCLOUD helpers
+
+void
+cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg)
+{
+  // Store ROS message
+  latest_pointcloud_ = cloud_msg;
+
+  // Convert ROS message to PCL pointcloud pointer
+  pcl::fromROSMsg(*cloud_msg, *cloud_ptr_);
+
+  // Debug:
+  pubFilteredPCMsg(pc_pub, *filtered_cloud_ptr_);
+}
+
+// -------------------------------------------------------------------------------------------
+void
+cw2::pubFilteredPCMsg(ros::Publisher &pc_pub, PointC &pc)
+{
+  // Convert PCL pointcloud to ROS message
+  pcl::toROSMsg(pc, filtered_cloud_msg);
+
+  // Assing a header
+  filtered_cloud_msg.header.stamp = ros::Time::now();
+  filtered_cloud_msg.header.frame_id = "color";
+
+  // Publish pointcloud
+  pc_pub.publish(filtered_cloud_msg);
+  // ROS_INFO("Published filtered cloud with %d points", (int)pc.size());
 }
 
 // ----------------------------------------------------------------------------
-pcl::PointCloud<pcl::PointXYZRGBA>::Ptr
+PointCPtr
 cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point) 
 {
-  if (cloud_ptr_->empty()) {
-      ROS_ERROR("Input pointcloud empty.");
+  // Check input pointcloud
+  if (!cloud_ptr_ || cloud_ptr_->empty()) {
+      ROS_ERROR("Input pointcloud not initialized or empty.");
       return nullptr;
   }
 
@@ -1302,91 +1101,118 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
   //         min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
 
   // Create a new point cloud for the cluster
-  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cluster(
-      new pcl::PointCloud<pcl::PointXYZRGBA>);
-
-  // Known object dimensions 
-  const double GRID_CELL_SIZE = 0.04;  // 40 mm
-  const double TOTAL_SIZE = 0.2;       // 200 mm
-  const double HEIGHT = 0.04;          // 40 mm
-  const double MARGIN = 0.04;          // allow 40 mm margin
+  PointCPtr cluster(new PointC);
 
   // Transform object_point to camera frame
   geometry_msgs::PointStamped object_cam_frame;
   try {
     object_cam_frame = tf_buffer_.transform(object_point,
-      cloud_ptr_->header.frame_id,
-      ros::Duration(1.0));
-    ROS_INFO_STREAM("Transform: " << object_cam_frame);
+                                            cloud_ptr_->header.frame_id,
+                                            ros::Duration(1.0));
+    // ROS_INFO_STREAM("Transform: " << object_cam_frame);
   } catch (tf2::TransformException &ex) {
     ROS_WARN("TF transform failed: %s", ex.what());
     return nullptr;
   };
 
-  // Define the centers
+  // Define plane centers
   double center_x = object_cam_frame.point.x;
   double center_y = object_cam_frame.point.y;
-  double center_z = object_cam_frame.point.z;
 
-  // Filter x-axis
+  // Define pass-through filter
   pcl::PassThrough<pcl::PointXYZRGBA> pass;
+
+  // Dimensions 
+  const double grid_size = 0.2;  // 200 mm
+  const double margin = 0.04;    // 40 mm
+
+  // Filter along x-axis
+  double x_min = center_x - (grid_size/2 + margin);
+  double x_max = center_x + (grid_size/2 + margin);
   pass.setInputCloud(cloud_ptr_);
   pass.setFilterFieldName("x");
-  double x_min = center_x - (TOTAL_SIZE/2 + MARGIN);
-  double x_max = center_x + (TOTAL_SIZE/2 + MARGIN);
   pass.setFilterLimits(x_min, x_max);
   pass.filter(*cluster);
   ROS_INFO("After X filter [%.3f, %.3f]: %lu points", x_min, x_max, cluster->points.size());
 
-  // Filter y-axis
+  // Filter along y-axis
+  double y_min = center_y - (grid_size/2 + margin);
+  double y_max = center_y + (grid_size/2 + margin);
   pass.setInputCloud(cluster);
   pass.setFilterFieldName("y");
-  double y_min = center_y - (TOTAL_SIZE/2 + MARGIN);
-  double y_max = center_y + (TOTAL_SIZE/2 + MARGIN);
   pass.setFilterLimits(y_min, y_max);
   pass.filter(*cluster);
   ROS_INFO("After Y filter [%.3f, %.3f]: %lu points", y_min, y_max, cluster->points.size());
 
-  // Filter z-axis
+  // Filter along z-axis
   pass.setInputCloud(cluster);
   pass.setFilterFieldName("z");
-  double z_max = 0.70;   // camera z-position in base frame = 5cm lower than EE (lifted at 0.75)
-  double z_min = 0.64;   // object height = 40 mm (add 20 mm margin)
+  double z_max = 0.70;   // camera z-position = 50 mm lower than arm (lifted at 0.8)
+  double z_min = 0.64;   // object height = 40 mm (allow enough margin, but less relevant)
   pass.setFilterLimits(z_min, z_max);
   pass.filter(*cluster);
   ROS_INFO("After Z filter [%.3f, %.3f]: %lu points", z_min, z_max, cluster->points.size());
 
-  if (cluster->points.size() < 50) {  // Minimum points threshold
+  if (cluster->points.size() < 1000) {  // Minimum points threshold
       ROS_WARN("Too few points in cluster.");
       return nullptr;
   }
 
-  // // Debug output for resulting cluster bounds
-  // pcl::getMinMax3D(*cluster, min_pt, max_pt);
-  // ROS_INFO("Filtered cluster bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
-  //          min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
+  // // Density normalization with voxel grid filtering (optional)
+  // if (cluster->points.size() >= 1000) {  
+  //   ointCPtr norm_cluster(new PointC);
+  //   pcl::VoxelGrid<pcl::PointXYZRGBA> vg;
+  //   vg.setInputCloud(cluster);
+  //   vg.setLeafSize(0.002f, 0.002f, 0.002f); // 2mm voxel size
+  //   vg.filter(*norm_cluster);
+  //   ROS_INFO("Normalized cluster with %lu points", norm_cluster->points.size());
+  //   cluster = norm_cluster;
+  // } else if (cluster->points.size() < 1000) {
+  //     ROS_WARN("Too few points in cluster.");
+  //     return nullptr;
+  // }
+
+  // // Alternative: color filtering
+  // PointCPtr filtered(new PointC);
+  // filtered->header = cloud_ptr_->header;
+
+  // for (const auto& point : cluster->points) {
+  //   // Extract RGB values
+  //   uint32_t rgb = *reinterpret_cast<const uint32_t*>(&point.rgba);
+  //   uint8_t r = (rgb >> 16) & 0x0000ff;
+  //   uint8_t g = (rgb >> 8) & 0x0000ff;
+  //   uint8_t b = (rgb) & 0x0000ff;
+    
+  //   // Robust green detection
+  //   bool is_green = (g > r) && (g > b) && (g > 60) && (g > (r + b) * 0.9);
+  //   if (!is_green) {
+  //     filtered->points.push_back(point);
+  //   }
+  // }
+  // ROS_INFO("After color filter: %lu points", filtered->points.size());
 
   return cluster;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Calculate orientation from cluster
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+// COMPUTER VISION helpers
 
 cv::Mat
-cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster,
-                          double resolution)
+cw2::clusterToBinaryImg(const PointCPtr &cluster,
+                        double resolution)
 {
-  // Calculate min & max x-y
+  // Calculate xy spread of the cluster (bounding box)
   Eigen::Vector4f min_pt, max_pt;
   pcl::getMinMax3D(*cluster, min_pt, max_pt);
+  double box_width = (max_pt[0] - min_pt[0]);
+  double box_height = (max_pt[1] - min_pt[1]);
+  // ROS_INFO("XY bounding box: %.3f m by %.3f m", box_width, box_height);
 
-  double width_m = (max_pt[0] - min_pt[0]);
-  double height_m = (max_pt[1] - min_pt[1]);
-  ROS_INFO("XY bounding box: %.3f m by %.3f m", width_m, height_m);
-
-  // Calculate image dimensions (in pixels)
-  int img_width  = static_cast<int>(std::ceil((max_pt[0] - min_pt[0]) / resolution));
-  int img_height = static_cast<int>(std::ceil((max_pt[1] - min_pt[1]) / resolution));
+  // Derive image dimensions
+  int img_width  = static_cast<int>(std::ceil((box_width) / resolution));
+  int img_height = static_cast<int>(std::ceil((box_height) / resolution));
+  // ROS_INFO("Image dimensions (width x height): %d x %d pixels", img_width, img_height);
 
   // Create a blank image (8-bit grayscale)
   cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);
@@ -1395,21 +1221,23 @@ cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster
   for (const auto &pt : cluster->points)
   {
     // Project the 3D point into 2D (x-y plane)
-    int u = static_cast<int>((pt.x - min_pt[0]) / resolution);
-    int v = static_cast<int>((pt.y - min_pt[1]) / resolution);
+    int w = static_cast<int>((pt.x - min_pt[0]) / resolution);  // width
+    int h = static_cast<int>((pt.y - min_pt[1]) / resolution);  // height
     
-    // Ensure the coordinates are within image bounds
-    if (u >= 0 && u < img_width && v >= 0 && v < img_height)
+    // Keep coordinates within image bounds
+    if (w >= 0 && w < img_width && h >= 0 && h < img_height)
     {
-      binaryImg.at<uchar>(v, u) = 255;
+      binaryImg.at<uchar>(h, w) = 255;
     }
   }
-
-  // // Debug: check image orientation is the same than camera's top-down view
-  // std::string package_path = ros::package::getPath("cw2_team_16");
-  // cv::imwrite(package_path + "/src/binary.png", binaryImg);
-  // ROS_INFO("Saved binary image");
   
+  // Morphological operations (optional, no particular benefits)
+  // cv::erode(binaryImg, binaryImg, cv::Mat(), cv::Point(-1,-1), 1);
+  // cv::morphologyEx(binaryImg,
+  //                 binaryImg,
+  //                 cv::MORPH_OPEN,  
+  //                 cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2))); 
+
   return binaryImg;
 }
 
@@ -1417,123 +1245,59 @@ cw2::clusterToBinaryImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr &cluster
 std::vector<std::vector<cv::Point>>
 cw2::extractContours(const cv::Mat &binaryImg)
 {
-    // Invert the binary image to extract contours more easily
-    cv::Mat inverted;
-    cv::bitwise_not(binaryImg, inverted);
+  // Invert the binary image to extract contours more easily
+  cv::Mat inverted;
+  cv::bitwise_not(binaryImg, inverted);
 
-    // Find contours
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(inverted, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  // Find contours
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(inverted, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
-    // // NEW:
-    // // Debug: check contours
-    // std::string package_path = ros::package::getPath("cw2_team_16");
-    // cv::Mat ContoursImg;
-    // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
-    // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,0,255), 2);
-    // cv::imwrite(package_path + "/src/contours.png", ContoursImg);
-    // ROS_INFO("Saved image with contours");
-
-    return contours;
+  if (contours.size() != 1){
+    ROS_INFO("Found %lu contours", contours.size());
+  }
+  return contours;
 }
 
 // ----------------------------------------------------------------------------
-std::vector<cv::Point>
-cw2::selectSegment(const std::vector<std::vector<cv::Point>> &contours)
-{
-double bestLength = 0;
-std::vector<cv::Point> bestContour;
+double
+cw2::findActualAngle(const std::string &shape_type,
+                    double angle)
+{ 
+  /* minAreaRect() returns the minimum area rotated rectangle:
+    - 4 corner points ordered clockwise, starting from the point with the lowest y
+    - if 2 points have the same lowest y, the rightmost point = starting point
+    - returns angle between the line (starting to end point) & the horizontal
+    - value always lies between [-90,0). */
 
-// Find longest segment
-for (const auto &contour : contours)
-{
-  cv::Moments m = cv::moments(contour);
-  if (m.m00 <= 0) continue;
+  // When T1 any orientation = False, rotated rectangle images show:
+  //  angle = -45 deg for crosses (because +shaped)
+  //  angle = -90 deg for noughts (because 0 excluded)
 
-    // Fit a rotated rectangle to measure length
-    cv::RotatedRect box = cv::minAreaRect(contour);
-    float length = std::max(box.size.width, box.size.height);
-
-    if (length > bestLength)
-    {
-      bestLength = length;
-      bestContour = contour;
+  if (shape_type == "cross") {
+    angle += 45.0;
+  } else if (shape_type == "nought") {
+  angle += 90.0;
   }
+
+  // Four-fold symmetry > simplify by normalizing to [-45, 45]
+  while (angle > 45.0)
+  angle -= 90.0;
+  while (angle < -45.0)
+  angle += 90.0;
+
+  // Return inverse sign (from debug observations)
+  //  - positive angle for counter-clockwise rotation
+  //  - negative angle for clockwise rotation 
+  return - angle;
 }
 
-return bestContour;
-}
 
-// Task 2 & 3 helpers
 
 /////////////////////////////////////////////////////////////////////////////////
-bool 
-cw2::moveToPoseWithFallback(const geometry_msgs::PoseStamped &target_pose) {
-  geometry_msgs::PoseStamped pose_copy = target_pose;
-  /* This function is for pure moving without tolerances for picking & placing. */
+// Task 2 & 3 helpers
 
-  // Ensure the target pose has a valid frame ID
-  if (pose_copy.header.frame_id.empty()) {
-    pose_copy.header.frame_id = "panda_link0";
-  }
 
-  // Set a default orientation if none is provided
-  const auto& q = pose_copy.pose.orientation;
-  if (q.x == 0 && q.y == 0 && q.z == 0 && q.w == 0) {
-    tf2::Quaternion q_set;
-    q_set.setRPY(0.0, M_PI, M_PI_4 + M_PI_2); // Default orientation (roll, pitch, yaw)
-    q_set.normalize();
-    pose_copy.pose.orientation = tf2::toMsg(q_set);
-  }
-
-  // Add the target pose to the waypoints for Cartesian planning
-  std::vector<geometry_msgs::Pose> waypoints;
-  waypoints.push_back(pose_copy.pose);
-  arm_group_.clearPathConstraints();
-
-  bool success = false;
-
-  // Attempt Cartesian path planning
-  if (planAndExecuteCartesian(waypoints, "moveToPoseWithFallback")) {
-    success = true;
-  } else {
-    // If Cartesian planning fails, fall back to joint-space planning
-    ROS_WARN("Cartesian planning failed, switching to joint-space planning...");
-    arm_group_.setPoseTarget(pose_copy);
-    moveit::planning_interface::MoveGroupInterface::Plan joint_plan;
-
-    if (arm_group_.plan(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-      success = (arm_group_.execute(joint_plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    }
-  }
-
-  // Check if all planning attempts failed
-  if (!success) {
-    ROS_ERROR("moveToPoseWithFallback: All planning attempts failed.");
-    return false;
-  }
-
-  return true;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-void
-cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_input_msg)
-{
-  latest_pointcloud_ = cloud_input_msg;
-
-  // Convert ROS message to PCL point cloud
-  pcl_conversions::toPCL (*cloud_input_msg, g_pcl_pc);
-  pcl::fromPCLPointCloud2 (g_pcl_pc, *g_cloud_ptr);
-
-  // Also convert directly to cloud_ptr_ 
-  pcl::fromROSMsg(*cloud_input_msg, *cloud_ptr_);
-
-  // Filter the point cloud
-  pubFilteredPCMsg(g_pub_cloud, *g_cloud_filtered);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 std::string
 cw2::computeColor(double avg_r, double avg_g, double avg_b)
 { 
@@ -1564,29 +1328,18 @@ cw2::computeColor(double avg_r, double avg_g, double avg_b)
   return "unknown";
 }
 
-///////////////////////////////////////////////////////////////////////////////
-void
-cw2::pubFilteredPCMsg(ros::Publisher &pc_pub, PointC &pc)
-{
-  pcl::toROSMsg(pc, g_cloud_filtered_msg);
-  g_cloud_filtered_msg.header.stamp = ros::Time::now();
-  g_cloud_filtered_msg.header.frame_id = "color";
-
-  pc_pub.publish(g_cloud_filtered_msg);
-  // ROS_INFO("Published filtered cloud with %d points", (int)pc.size());
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 void 
 cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
   if (!in_cloud_ptr || in_cloud_ptr->empty()) {
     ROS_WARN("Input point cloud is empty, skipping filtering.");
-    out_cloud_ptr.reset(new pcl::PointCloud<pcl::PointXYZRGB>);  // Ensure output is always valid
+    out_cloud_ptr.reset(new PointC);
     return;
   }
 
-  // Create a new local variable to temporarily store the result, avoiding memory sharing issues
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+  // Create a new local variable to temporarily store the result
+  PointCPtr temp_cloud(new PointC);  
 
   for (const auto &point : in_cloud_ptr->points) {
     double r = static_cast<double>(point.r);
@@ -1606,14 +1359,14 @@ cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
   temp_cloud->is_dense = true;
 
   // Ensure frame_id is not empty
-  // out_cloud_ptr->header.frame_id = "color"; 
-  out_cloud_ptr->header.frame_id = "panda_link0";
+  temp_cloud->header.frame_id = "panda_link0";
 
   ROS_INFO("Filtered point cloud has %zu points", temp_cloud->points.size());
 
   // Assign to the external smart pointer after completion
   out_cloud_ptr = temp_cloud;  // Safe assignment
 }
+
 
 ///////////////////////////////////////////////////////////////////////////////
 void 
@@ -1677,7 +1430,7 @@ cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
 
 ///////////////////////////////////////////////////////////////////////////////
 void
-cw2::segmentObjectsWithOpenCV(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters) {
+cw2::segmentObject(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters) {
   /* This function segments the point cloud using OpenCV and returns clusters */
   if (!in_cloud_ptr || in_cloud_ptr->empty()) {
     ROS_WARN("Input point cloud is empty, skipping OpenCV segmentation.");
@@ -1739,7 +1492,7 @@ cw2::segmentObjectsWithOpenCV(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &c
   clusters.clear();
   clusters.resize(num_labels - 1);
   for (int i = 0; i < num_labels - 1; ++i) {
-      clusters[i] = PointCPtr(new pcl::PointCloud<pcl::PointXYZRGB>);
+      clusters[i] = PointCPtr(new PointC);
   }
 
   for (int y = 0; y < img_size; ++y) {
@@ -1780,7 +1533,7 @@ cw2::classifyObjectByPointCount(size_t num_points) {
 }
 
 void 
-cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
+cw2::updateMergedObjects(const std::vector<PointCPtr> &clusters) {
   /* This function updates the merged objects based on one view */
   
   computeObjectCenters(clusters);
@@ -1806,7 +1559,7 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
     }
     else {
       float estimated_size = 0.0f;
-      shape = classifyShapeWithOpenCV(clusters[i], estimated_size);
+      shape = classifyShape(clusters[i], estimated_size);
     }
 
     // Check if it matches an existing merged object
@@ -1851,7 +1604,7 @@ cw2::updateMergedObjectsFromSingleView(const std::vector<PointCPtr> &clusters) {
 }
 
 void 
-cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
+cw2::refineObjectMerging(float dist_threshold) {
   /* This function merges nearby merged objects based on distance and give results
      based on voting. */
   std::vector<MultiViewObject> merged_final;
@@ -1923,7 +1676,7 @@ cw2::mergeNearbyMergedObjectsWithPriorityVoting(float dist_threshold) {
 }
 
 void 
-cw2::finalizeVotingResults() {
+cw2::determineObjectFromVotes() {
   /* This function finalizes the merging results and prints them. */
   ROS_INFO("==== Results ====");
 
@@ -1947,7 +1700,7 @@ cw2::finalizeVotingResults() {
 }
 
 std::string
-cw2::classifyShapeWithOpenCV(PointCPtr cluster_cloud, float &estimated_x_mm) {
+cw2::classifyShape(PointCPtr cluster_cloud, float &estimated_x_mm) {
 if (!cluster_cloud || cluster_cloud->empty()) {
 estimated_x_mm = 0;
 return "unknown";
@@ -2007,3 +1760,19 @@ ROS_INFO_STREAM("Shape: " << shape
 << " | Fill ratio: " << fill_ratio);
 return shape;
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+// geometry_msgs::PoseStamped
+// cw2::pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt)
+// {
+//   geometry_msgs::PoseStamped pose;
+//   pose.header = pt.header;              
+//   pose.pose.position = pt.point;        
+
+//   // Assign default orientation 
+//   pose.pose.orientation.x = 0.0;
+//   pose.pose.orientation.y = 0.0;
+//   pose.pose.orientation.z = 0.0;
+//   pose.pose.orientation.w = 1.0;
+//   return pose;
+// }
