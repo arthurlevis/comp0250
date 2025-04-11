@@ -122,20 +122,20 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     return true;
   }
 
-  // Debug: show binary image
-  std::string package_path = ros::package::getPath("cw2_team_16");
-  cv::imwrite(package_path + "/debug/binary.png", binaryImg);
-  ROS_INFO("Saved binary image");
+  // // Debug: show binary image
+  // std::string package_path = ros::package::getPath("cw2_team_16");
+  // cv::imwrite(package_path + "/debug/binary.png", binaryImg);
+  // ROS_INFO("Saved binary image");
 
   // iii. Extract contour from the binary image (should be 1)
   std::vector<std::vector<cv::Point>> contours = extractContours(binaryImg);
 
-  // Debug: show contour in green
-  cv::Mat ContoursImg;
-  cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
-  cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
-  cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
-  ROS_INFO("Saved image with contours");
+  // // Debug: show contour in green
+  // cv::Mat ContoursImg;
+  // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
+  // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
+  // cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
+  // ROS_INFO("Saved image with contours");
 
   if (contours.size() != 1) {
     ROS_ERROR("None or more than one contour found. Try again.");  // occurs randomly
@@ -148,19 +148,19 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   double rect_angle = contourRect.angle;
   ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
 
-  // Debug: show contour in green & rotated rectangle in red
-  cv::Mat rectImg;
-  cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
-  cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
-  cv::Point2f vertices[4];
-  contourRect.points(vertices);
-  for (int i = 0; i < 4; i++) {
-    cv::line(rectImg, vertices[i], vertices[(i+1)%4], cv::Scalar(0, 0, 255), 2);
-  }
-  cv::imwrite(package_path + "/debug/rectangle.png", rectImg);
-  ROS_INFO("Saved image with rotated rectangle");
+  // // Debug: show contour in green & rotated rectangle in red
+  // cv::Mat rectImg;
+  // cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
+  // cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
+  // cv::Point2f vertices[4];
+  // contourRect.points(vertices);
+  // for (int i = 0; i < 4; i++) {
+  //   cv::line(rectImg, vertices[i], vertices[(i+1)%4], cv::Scalar(0, 0, 255), 2);
+  // }
+  // cv::imwrite(package_path + "/debug/rectangle.png", rectImg);
+  // ROS_INFO("Saved image with rotated rectangle");
 
-  // v. Adjust angle depending on shape
+  // v. Find actual object rotation depending on shape
   double actual_angle = findActualAngle(shape_type, rect_angle);
   ROS_INFO("Actual object rotation: %.2f deg", actual_angle);  // check with online protactor
 
