@@ -73,11 +73,9 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // // Check orientation
   // geometry_msgs::PoseStamped current_pose = arm_group_.getCurrentPose();
-  // current_pose.header = base_frame_;
   // double roll, pitch, yaw;
   // tf2::getEulerYPR(current_pose.pose.orientation, yaw, pitch, roll);
   // ROS_INFO("Roll: %.3f, Pitch: %.3f, Yaw: %.3f (rad)", roll, pitch, yaw);
-  // // Roll: 3.140, Pitch: 0.002, Yaw: -0.785
 
   // Add return to home for helpers that fail more often
 
@@ -105,71 +103,27 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   ros::Duration(1.5).sleep();
   spinner.stop();
 
-  // 4. Calculate orientation from object cluster------------------------------------------
-
-  // i. Extract object cluster
-  PointCPtr cluster = getObjectCluster(object_point);
-  if (!cluster || cluster->empty()) {
-    ROS_ERROR("Failed to extract object cluster.");
-    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  // e.g.) 0 points along z-axis
+  // 4. Extract object cluster
+  PointCPtr obj_cluster = getObjectCluster(object_point);
+  if (!obj_cluster || obj_cluster->empty()) {
+    ROS_ERROR("Failed to extract object cluster.");  // e.g.) 0 points along z-axis
+    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  
     return true;
   }
 
-  // ii. Convert cluster to binary image
-  cv::Mat binaryImg = clusterToBinaryImg(cluster, resolution);
-  if (binaryImg.empty()) {
-    ROS_ERROR("Binary image is empty!");
-    return true;
+  // 5. Calculate orientation from cluster
+  double rect_angle = getOrientationFomCluster(obj_cluster);  // fitted rectangle rotation [-90,0) deg.
+  if (rect_angle == 0.0) {  
+    moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
+    return true;  
   }
+  double actual_angle = findActualAngle(shape_type, rect_angle);  // actual rotation
+  double new_yaw = actual_angle * CV_PI / 180.0;                  // convert to radians
 
-  // // Debug: show binary image
-  // std::string package_path = ros::package::getPath("cw2_team_16");
-  // cv::imwrite(package_path + "/debug/binary.png", binaryImg);
-  // ROS_INFO("Saved binary image");
-
-  // iii. Extract contour from the binary image (should be 1)
-  std::vector<std::vector<cv::Point>> contours = extractContours(binaryImg);
-
-  // // Debug: show contour in green
-  // cv::Mat ContoursImg;
-  // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
-  // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
-  // cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
-  // ROS_INFO("Saved image with contours");
-
-  if (contours.size() != 1) {
-    ROS_ERROR("None or more than one contour found. Try again.");  // occurs randomly
-    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});
-    return true;
-  }
-
-  // iv. Map a rectangle to contour & calculate rotation
-  cv::RotatedRect contourRect = cv::minAreaRect(contours[0]); 
-  double rect_angle = contourRect.angle;
   ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
-
-  // // Debug: show contour in green & rotated rectangle in red
-  // cv::Mat rectImg;
-  // cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
-  // cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
-  // cv::Point2f vertices[4];
-  // contourRect.points(vertices);
-  // for (int i = 0; i < 4; i++) {
-  //   cv::line(rectImg, vertices[i], vertices[(i+1)%4], cv::Scalar(0, 0, 255), 2);
-  // }
-  // cv::imwrite(package_path + "/debug/rectangle.png", rectImg);
-  // ROS_INFO("Saved image with rotated rectangle");
-
-  // v. Find actual object rotation depending on shape
-  double actual_angle = findActualAngle(shape_type, rect_angle);
-  ROS_INFO("Actual object rotation: %.2f deg", actual_angle);  // check with online protactor
-
-  // vi. Convert angle to radians
-  double new_yaw = actual_angle * CV_PI / 180.0;  
-
-  // // --------------------------------------------------------------------------------
+  ROS_INFO("Actual object rotation: %.2f deg", actual_angle); 
   
-  // 5. Lower the arm to increase dexterity (recommended when object is in corners)
+  // 6. Lower the arm to increase dexterity (recommended when object located in corners)
   geometry_msgs::PoseStamped adjust_pose = arm_group_.getCurrentPose();
   adjust_pose.pose.position.z -= 0.40;
   ROS_DEBUG("Lowering the arm...");
@@ -178,7 +132,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     return true;
   }
 
-  // 6. Adjust x,y positions (grasping strategy)
+  // 7. Adjust x,y positions (grasping strategy)
   ROS_DEBUG("Adjusting XY...");
   if (!moveHorizontally(object_point, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01})) {
     ROS_ERROR("Failed to adjust XY.");
@@ -187,7 +141,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("XY adjusted successfully.");
   
-  // 7. Adjust yaw angle (grasping strategy)
+  // 8. Adjust yaw angle (grasping strategy)
   ROS_DEBUG("Adjusting yaw angle...");
   if (!adjustYaw(shape_type, new_yaw, 0.4, 0.4, {0.03, 0.02, 0.05})) {
     ROS_WARN("Arm rotation not or poorly completed.");
@@ -195,14 +149,14 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   }
   ROS_DEBUG("Yaw adjusted successfully.");
 
-  // 8. Open the gripper
+  // 9. Open the gripper
   ROS_DEBUG("Opening the gripper...");
   if (!toggleGripper(gripper_open_, "openGripper", 1.0, 1.0)) {
     ROS_ERROR("Failed to open the gripper.");
     return true;
   }
 
-  // 9. Lower the arm to pick the object
+  // 10. Lower the arm to pick the object
   geometry_msgs::PoseStamped pick_pose = arm_group_.getCurrentPose();
   pick_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.08;
   ROS_DEBUG("Lowering the arm...");
@@ -211,7 +165,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     return true;
   }
 
-  // 10. Close the gripper
+  // 11. Close the gripper
   ROS_DEBUG("Closing the gripper...");
   if (!toggleGripper(gripper_closed_, "closeGripper", 0.5, 0.5)) {
     ROS_ERROR("Failed to close the gripper.");
@@ -221,7 +175,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   // note: if the gripper fails to hold the object, the arm will still execute the next steps,
   // potentially placing nothing in the basket.
 
-  // 11. Lift the object at a safe height
+  // 12. Lift the object at a safe height
   geometry_msgs::PoseStamped lift_pose = arm_group_.getCurrentPose();
   lift_pose.pose.position.z = goal_point.point.z + 0.33 + fingertip_offset + 0.14;
   ROS_DEBUG("Lifting the object...");
@@ -230,7 +184,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     return true;
   }
 
-  // 12. Move the arm above the basket
+  // 13. Move the arm above the basket
   if (is_diagonal) {  // check diagonality
     ROS_INFO("Object & basket in diagonally opposite quadrants. Rotating base joint...");
     std::vector<double> joint_target = arm_group_.getCurrentJointValues();
@@ -247,7 +201,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     return true;
   }
 
-  // 13. Lower the arm to safe release height
+  // 14. Lower the arm to safe release height
   geometry_msgs::PoseStamped release_pose = arm_group_.getCurrentPose();
   release_pose.pose.position.z = goal_point.point.z + 0.05 + fingertip_offset + 0.25;
   ROS_DEBUG("Lowering the object...");
@@ -256,14 +210,14 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
     // return true;  // often acceptable
   }
 
-  // 14. Release object into the basket.
+  // 15. Release object into the basket.
   ROS_DEBUG("Releasing the gripper...");
   if (!toggleGripper(gripper_open_, "releaseObject", 1.0, 1.0)) {
     ROS_ERROR("Failed to release the object.");
     return true;
   }
 
-  // 15. Return to home
+  // 16. Return to home
   ros::Duration(0.5).sleep();
   ROS_DEBUG("Returning back to 'ready'...");
   if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
@@ -422,7 +376,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   pose4 = pose3;
   pose4.pose.position.x = 0;
 
-
   // === Viewpoint 5: Top Left ===
   pose5 = pose3;
   pose5.pose.position.x = -0.468;
@@ -438,7 +391,6 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   // === Viewpoint 8: Right Center ===
   pose8 = pose7;
   pose8.pose.position.x = 0.0;
-
 
   camera_view_poses = {pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8};
 
@@ -458,7 +410,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   refineObjectMerging();
   determineObjectFromVotes();
 
-  // 2.print and count all detected objects 
+  // 2. Print & count all detected objects 
   int cross_count = 0;
   int nought_count = 0;
   int black_count = 0;
@@ -507,7 +459,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   response.num_most_common_shape = most_common_shape_count;
 
 
-   // Step 3: Find closest object among candidate shapes
+   // 4. Find closest object among candidate shapes
   double min_dist = std::numeric_limits<double>::max();
   const MultiViewObject* target = nullptr;
 
@@ -527,7 +479,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     return false;
   }
 
-  // Step 4: Find the basket (one with most points in the cloud)
+  // 5. Find the basket (one with most points in the cloud)
   const MultiViewObject* basket_obj = nullptr;
   int max_basket_points = -1;
 
@@ -540,23 +492,165 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   if (!basket_obj) {
   ROS_WARN("Basket not detected. Using default basket position.");
-
     static MultiViewObject default_basket_obj;
     default_basket_obj.center_x = -0.41 - 0.045;
     default_basket_obj.center_y = -0.36;
     default_basket_obj.shape = "basket";
     default_basket_obj.color = "darkred";
     basket_obj = &default_basket_obj;
-
   }
   ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f)", target->shape.c_str(),
            target->center_x, target->center_y);
   ROS_INFO("Basket position: (%.3f, %.3f)", basket_obj->center_x, basket_obj->center_y);
 
 
-  // PICK AND PLACE TASK 3
+  // PICK AND PLACE TASK 3 (same method than in task 1)
+  // REPLACE OPOINT by object point & BPOINT by goal/basket point
 
-  ROS_INFO("Task 3 completed successfully.");
+  // // Move the arm above the object
+  // ROS_DEBUG("Moving above the object...");
+  // if (!moveAboveObject(OPOINT, 0.004, {0.005, 0.01, 0.005})) {
+  //   ROS_ERROR("Failed to move above the object.");
+  //   return true;
+  // }
+
+  // // Raise the arm to get larger FoV
+  // geometry_msgs::PoseStamped fov_pose = arm_group_.getCurrentPose();
+  // fov_pose.pose.position.z = OPOINT.point.z + 0.75;
+  // ROS_DEBUG("Lifting the arm...");
+  // if (!moveArmUpDown(fov_pose, "raiseArmToLargerFOV", 0.002, {0.005, 0.01, 0.005})) {
+  //   ROS_ERROR("Failed to raise the arm.");
+  //   return true;
+  // }
+
+  // // Allow some time to process the pointcloud
+  // ros::AsyncSpinner spinner(2);
+  // spinner.start();
+  // ros::Duration(1.5).sleep();
+  // OPOINT.header.stamp = ros::Time::now();
+  // ros::Duration(1.5).sleep();
+  // spinner.stop();
+
+  // // 4. Extract object cluster
+  // PointCPtr obj_cluster = getObjectCluster(OPOINT);
+  // if (!obj_cluster || obj_cluster->empty()) {
+  //   ROS_ERROR("Failed to extract object cluster.");  // e.g.) 0 points along z-axis
+  //   moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  
+  //   return true;
+  // }
+
+  // // Calculate orientation from cluster
+  // double rect_angle = getOrientationFomCluster(obj_cluster);  // fitted rectangle rotation [-90,0) deg.
+  // if (rect_angle == 0.0) {  
+  //   moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
+  //   return true;  
+  // }
+  // double actual_angle = findActualAngle(shape_type, rect_angle);  // actual rotation
+  // double new_yaw = actual_angle * CV_PI / 180.0;                  // convert to radians
+
+  // ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
+  // ROS_INFO("Actual object rotation: %.2f deg", actual_angle); 
+  
+  // // Lower the arm to increase dexterity (recommended when object located in corners)
+  // geometry_msgs::PoseStamped adjust_pose = arm_group_.getCurrentPose();
+  // adjust_pose.pose.position.z -= 0.40;
+  // ROS_DEBUG("Lowering the arm...");
+  // if (!moveArmUpDown(adjust_pose, "lowerArmToAdjust", 0.005, {0.01, 0.01, 0.01})) {
+  //   ROS_ERROR("Failed to lower the arm");
+  //   return true;
+  // }
+
+  // // Adjust x,y positions (grasping strategy)
+  // ROS_DEBUG("Adjusting XY...");
+  // if (!moveHorizontally(OPOINT, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01})) {
+  //   ROS_ERROR("Failed to adjust XY.");
+  //   moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
+  // return true;
+  // }
+  // ROS_DEBUG("XY adjusted successfully.");
+  
+  // // Adjust yaw angle (grasping strategy)
+  // ROS_DEBUG("Adjusting yaw angle...");
+  // if (!adjustYaw(shape_type, new_yaw, 0.4, 0.4, {0.03, 0.02, 0.05})) {
+  //   ROS_WARN("Arm rotation not or poorly completed.");
+  // return true;
+  // }
+  // ROS_DEBUG("Yaw adjusted successfully.");
+
+  // // Open the gripper
+  // ROS_DEBUG("Opening the gripper...");
+  // if (!toggleGripper(gripper_open_, "openGripper", 1.0, 1.0)) {
+  //   ROS_ERROR("Failed to open the gripper.");
+  //   return true;
+  // }
+
+  // // Lower the arm to pick the object
+  // geometry_msgs::PoseStamped pick_pose = arm_group_.getCurrentPose();
+  // pick_pose.pose.position.z = OPOINT.point.z + fingertip_offset + 0.08;
+  // ROS_DEBUG("Lowering the arm...");
+  // if (!moveArmUpDown(pick_pose, "lowerArmToPick", 0.005, {0.01, 0.01, 0.01})) {
+  //   ROS_ERROR("Failed to lower the arm.");
+  //   return true;
+  // }
+
+  // // Close the gripper
+  // ROS_DEBUG("Closing the gripper...");
+  // if (!toggleGripper(gripper_closed_, "closeGripper", 0.5, 0.5)) {
+  //   ROS_ERROR("Failed to close the gripper.");
+  //   return true;
+  // }
+
+  // // Lift the object at a safe height
+  // geometry_msgs::PoseStamped lift_pose = arm_group_.getCurrentPose();
+  // lift_pose.pose.position.z = BPOINT.point.z + 0.33 + fingertip_offset + 0.14;
+  // ROS_DEBUG("Lifting the object...");
+  // if (!moveArmUpDown(lift_pose, "liftObject", 0.005, {0.01, 0.01, 0.01})) {
+  //   ROS_ERROR("Failed to lift the object.");
+  //   return true;
+  // }
+
+  // // Move the arm above the basket
+  // if (is_diagonal) {  // check diagonality
+  //   ROS_INFO("Object & basket in diagonally opposite quadrants. Rotating base joint...");
+  //   std::vector<double> joint_target = arm_group_.getCurrentJointValues();
+  //   joint_target[0] -= M_PI_2; // rotate base joint by 90 deg to simplify planning
+  //   arm_group_.setJointValueTarget(joint_target);
+  //   if (!arm_group_.move()) {
+  //     ROS_WARN("Base rotated with Timed_Out error.");
+  //   }
+  // }
+  // ROS_DEBUG("Moving above the basket...");
+  // if (!moveHorizontally(BPOINT, shape_type, new_yaw, "moveAboveBasket", 0.005, {0.02, 0.025, 0.25})) {
+  //   ROS_ERROR("Failed to move above the basket.");
+  //   moveToReadyPose(0.25, 0.25, {0.02, 0.02, 0.02});
+  //   return true;
+  // }
+
+  // // Lower the arm to safe release height
+  // geometry_msgs::PoseStamped release_pose = arm_group_.getCurrentPose();
+  // release_pose.pose.position.z = BPOINT.point.z + 0.05 + fingertip_offset + 0.25;
+  // ROS_DEBUG("Lowering the object...");
+  // if (!moveArmUpDown(release_pose, "releasePose", 0.002, {0.025, 0.03, 0.3})) {
+  //   ROS_WARN("Failed to lower the object at safe height."); 
+  //   // return true;  // often acceptable
+  // }
+
+  // // Release object into the basket.
+  // ROS_DEBUG("Releasing the gripper...");
+  // if (!toggleGripper(gripper_open_, "releaseObject", 1.0, 1.0)) {
+  //   ROS_ERROR("Failed to release the object.");
+  //   return true;
+  // }
+
+  // // Return to home
+  // ros::Duration(0.5).sleep();
+  // ROS_DEBUG("Returning back to 'ready'...");
+  // if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
+  //   ROS_WARN("Back to 'ready' (ignore time error if successfully reached.)");
+  //   return true;
+  // }
+
+  // ROS_INFO("Task 3 completed successfully.");
 
   return true;
 }
@@ -1198,9 +1292,55 @@ cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point)
 
 // COMPUTER VISION helpers
 
+double
+cw2::getOrientationFomCluster(const PointCPtr &cluster)
+{
+  // Convert cluster to binary image
+  cv::Mat binary_img = clusterToBinaryImg(cluster);
+
+  // // Debug: show binary image
+  // std::string package_path = ros::package::getPath("cw2_team_16");
+  // cv::imwrite(package_path + "/debug/binary.png", binaryImg);
+  // ROS_INFO("Saved binary image")
+
+  // Extract contours from binary image
+  std::vector<std::vector<cv::Point>> contours = extractContours(binary_img);
+
+  // // Debug: show contour in green
+  // cv::Mat ContoursImg;
+  // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
+  // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
+  // cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
+  // ROS_INFO("Saved image with contours");
+
+  if (contours.size() != 1) {
+    ROS_ERROR("None or more than one contour found. Try again.");  // occurs randomly
+    return 0.0;
+  }
+
+  // Fit a minimum area rectangle to the contour & calculate rotation
+  cv::RotatedRect contourRect = cv::minAreaRect(contours[0]); 
+  double rect_angle = contourRect.angle;
+  ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
+
+  // // Debug: show contour in green & rotated rectangle in red
+  // cv::Mat rectImg;
+  // cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
+  // cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
+  // cv::Point2f vertices[4];
+  // contourRect.points(vertices);
+  // for (int i = 0; i < 4; i++) {
+  //   cv::line(rectImg, vertices[i], vertices[(i+1)%4], cv::Scalar(0, 0, 255), 2);
+  // }
+  // cv::imwrite(package_path + "/debug/rectangle.png", rectImg);
+  // ROS_INFO("Saved image with rotated rectangle");
+
+  return rect_angle;
+}
+
+// ----------------------------------------------------------------------------
 cv::Mat
-cw2::clusterToBinaryImg(const PointCPtr &cluster,
-                        double resolution)
+cw2::clusterToBinaryImg(const PointCPtr &cluster)
 {
   // Calculate xy spread of the cluster (bounding box)
   Eigen::Vector4f min_pt, max_pt;
@@ -1209,13 +1349,16 @@ cw2::clusterToBinaryImg(const PointCPtr &cluster,
   double box_height = (max_pt[1] - min_pt[1]);
   // ROS_INFO("XY bounding box: %.3f m by %.3f m", box_width, box_height);
 
+  // Define resolution
+  double resolution = camera_resolution;
+
   // Derive image dimensions
   int img_width  = static_cast<int>(std::ceil((box_width) / resolution));
   int img_height = static_cast<int>(std::ceil((box_height) / resolution));
   // ROS_INFO("Image dimensions (width x height): %d x %d pixels", img_width, img_height);
 
   // Create a blank image (8-bit grayscale)
-  cv::Mat binaryImg = cv::Mat::zeros(img_height, img_width, CV_8UC1);
+  cv::Mat binary_img = cv::Mat::zeros(img_height, img_width, CV_8UC1);
 
   // Determine coordinates of each cluster point
   for (const auto &pt : cluster->points)
@@ -1227,27 +1370,27 @@ cw2::clusterToBinaryImg(const PointCPtr &cluster,
     // Keep coordinates within image bounds
     if (w >= 0 && w < img_width && h >= 0 && h < img_height)
     {
-      binaryImg.at<uchar>(h, w) = 255;
+      binary_img.at<uchar>(h, w) = 255;
     }
   }
   
   // Morphological operations (optional, no particular benefits)
-  // cv::erode(binaryImg, binaryImg, cv::Mat(), cv::Point(-1,-1), 1);
-  // cv::morphologyEx(binaryImg,
-  //                 binaryImg,
+  // cv::erode(binary_img, binary_img, cv::Mat(), cv::Point(-1,-1), 1);
+  // cv::morphologyEx(binary_img,
+  //                 binary_img,
   //                 cv::MORPH_OPEN,  
   //                 cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2))); 
 
-  return binaryImg;
+  return binary_img;
 }
 
 // ----------------------------------------------------------------------------
 std::vector<std::vector<cv::Point>>
-cw2::extractContours(const cv::Mat &binaryImg)
+cw2::extractContours(const cv::Mat &binary_img)
 {
   // Invert the binary image to extract contours more easily
   cv::Mat inverted;
-  cv::bitwise_not(binaryImg, inverted);
+  cv::bitwise_not(binary_img, inverted);
 
   // Find contours
   std::vector<std::vector<cv::Point>> contours;

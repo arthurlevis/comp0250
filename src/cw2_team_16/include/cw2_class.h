@@ -160,9 +160,13 @@ private:
   getObjectCluster(const geometry_msgs::PointStamped &object_point);
 
   // COMPUTER VISION helpers-------------------------------------------------------
+  double
+  getOrientationFomCluster(const PointCPtr &cluster);
+  
+
   cv::Mat
-  clusterToBinaryImg(const PointCPtr &cluster,
-                    double resolution);
+  clusterToBinaryImg(const PointCPtr &cluster);
+  
   std::vector<std::vector<cv::Point>>
   extractContours(const cv::Mat &binaryImg);
   double
@@ -177,7 +181,6 @@ private:
               PointCPtr &out_cloud_ptr);
   void 
   computeObjectCenters(const std::vector<PointCPtr> &clusters);
-
   void
   segmentObject(PointCPtr &in_cloud_ptr,
                 std::vector<PointCPtr> &clusters);
@@ -251,7 +254,7 @@ private:
   std::vector<double> def_tolerances = {0.01, 0.01, 0.01};  // [joint, position, orientation]
 
   // Camera resolution
-  double resolution = 0.0028;  // mm per pixel
+  double camera_resolution = 0.0028;  // mm per pixel
 };
 
 #endif // end of include guard for cw2_CLASS_H_
