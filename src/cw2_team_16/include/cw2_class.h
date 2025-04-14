@@ -34,6 +34,7 @@ solution is contained within the cw2_team_<your_team_number> package */
 #include <tf2_ros/transform_listener.h>
 #include <tf/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.h>
 
 // MoveIt includes
 #include <moveit/move_group_interface/move_group_interface.h>
@@ -68,12 +69,15 @@ typedef PointC::Ptr PointCPtr;
 
 // ADD COMMENT
 struct MultiViewObject {
-  float center_x, center_y;
-  int point_count;
   std::string shape;
   std::string color;
-  int vote_count;
-  std::vector<int> point_counts_history;
+  float center_x;
+  float center_y;
+  float center_z;
+  float angle_deg;
+  int point_count;
+  PointCPtr pointcloud;
+  float unit_size_x;
 };
 
 // ADD COMMENT
@@ -82,6 +86,11 @@ struct ObjectInfo {
   double center_y;
   double area;
   std::string color;
+};
+
+struct ShapeInfo {
+  std::string shape;
+  float angle_deg;
 };
 class cw2
 {
@@ -126,7 +135,8 @@ private:
                   double new_yaw,
                   const std::string &action_name,  
                   double eef_step,
-                  std::vector<double> tolerances);
+                  std::vector<double> tolerances,
+                  double size = 0.0);
   bool
   moveToReadyPose(double velocity_scaling,
                   double accel_scaling,
@@ -180,21 +190,14 @@ private:
   colorFilter(const PointCPtr &in_cloud_ptr,
               PointCPtr &out_cloud_ptr);
   void 
-  computeObjectCenters(const std::vector<PointCPtr> &clusters);
-  void
-  segmentObject(PointCPtr &in_cloud_ptr,
-                std::vector<PointCPtr> &clusters);
-  std::string
-  classifyObjectByPointCount(size_t num_points);
-  void
-  updateMergedObjects(const std::vector<PointCPtr> &clusters);
-  void
-  refineObjectMerging(float dist_threshold = 0.09);
-  void
-  determineObjectFromVotes();
-  std::string
-  classifyShape(PointCPtr cluster_cloud, float &estimated_x_mm);
-  
+  classifyClustersFromMergedCloud(PointCPtr full_cloud);
+  cv::Mat convertClusterToImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr& cluster,
+                                      float resolution, cv::Scalar& avg_color);
+  ShapeInfo classifyShapeFromImage(const cv::Mat& image);
+  geometry_msgs::Point get3DCenter(PointCPtr cloud);
+  void publishCentroidMarker(const geometry_msgs::Point& pt, int id,
+                                 const std::string& label, float angle_deg);
+
   // // --------------------------------------------------------------------------
   // IF NEEDED
   // geometry_msgs::PoseStamped
@@ -237,7 +240,7 @@ private:
   // MODIFY FOR T3 ANY SIZE = TRUE
   // Gripper dimensions 
   double gripper_open_ = 0.08;       // 80 mm 
-  double gripper_closed_ = 0.038;    // 38 mm (object width = 40mm)
+  double gripper_closed_ = 0.015;    // 38 mm (object width = 40mm)
   double fingertip_offset = 0.0584;  // 58.4 mm
 
   // Home pose (when node starts)

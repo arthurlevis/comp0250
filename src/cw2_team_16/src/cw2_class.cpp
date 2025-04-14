@@ -92,7 +92,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   ROS_DEBUG("Lifting the arm...");
   if (!moveArmUpDown(fov_pose, "raiseArmToLargerFOV", 0.002, {0.005, 0.01, 0.005})) {
     ROS_ERROR("Failed to raise the arm.");
-    return true;
+    // return true;
   }
 
   // Allow some time to process the pointcloud
@@ -102,23 +102,86 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
   object_point.header.stamp = ros::Time::now();
   ros::Duration(1.5).sleep();
   spinner.stop();
+  ROS_WARN("Break Point 2");
 
-  // 4. Extract object cluster
-  PointCPtr obj_cluster = getObjectCluster(object_point);
-  if (!obj_cluster || obj_cluster->empty()) {
-    ROS_ERROR("Failed to extract object cluster.");  // e.g.) 0 points along z-axis
-    moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  
+  // Convert cloud_ptr_ to base_frame_ first
+  sensor_msgs::PointCloud2 cloud_msg;
+  pcl::toROSMsg(*cloud_ptr_, cloud_msg);
+  cloud_msg.header.frame_id = cloud_ptr_->header.frame_id;
+
+  geometry_msgs::TransformStamped transform_stamped;
+  try {
+    transform_stamped = tf_buffer_.lookupTransform(base_frame_, cloud_msg.header.frame_id, ros::Time(0), ros::Duration(1.0));
+  } catch (tf2::TransformException &ex) {
+    ROS_WARN("TF lookup failed: %s", ex.what());
     return true;
   }
 
+  cloud_msg.header.stamp = transform_stamped.header.stamp;
+
+  sensor_msgs::PointCloud2 cloud_transformed_msg;
+  try {
+    tf_buffer_.transform(cloud_msg, cloud_transformed_msg, base_frame_);
+  } catch (tf2::TransformException &ex) {
+    ROS_WARN("TF transform failed: %s", ex.what());
+    return true;
+  }
+
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
+  pcl::fromROSMsg(cloud_transformed_msg, *transformed_cloud);
+
+
+
+  colorFilter(transformed_cloud, filtered_cloud_ptr_);
+  merged_objects.clear();
+  classifyClustersFromMergedCloud(filtered_cloud_ptr_);
+
+  // PointCPtr obj_cluster_notrans = merged_objects.front().pointcloud;
+  // PointCPtr obj_cluster(new pcl::PointCloud<pcl::PointXYZRGBA>);
+
+  // std::string cloud_frame = cloud_ptr_->header.frame_id;
+  // sensor_msgs::PointCloud2 raw_cloud_msg;
+  // pcl::toROSMsg(*obj_cluster_notrans, raw_cloud_msg);
+  // raw_cloud_msg.header.frame_id = cloud_frame;
+
+  // geometry_msgs::TransformStamped transform_stamped;
+  // try {
+  //   transform_stamped = tf_buffer_.lookupTransform(
+  //     base_frame_, cloud_frame, ros::Time(0), ros::Duration(1.0));
+  // } catch (tf2::TransformException &ex) {
+  //   ROS_WARN("TF lookup failed: %s", ex.what());
+  //   return true;
+  // }
+
+  // raw_cloud_msg.header.stamp = transform_stamped.header.stamp;
+
+  // sensor_msgs::PointCloud2 transformed_cloud_msg;
+  // try {
+  //   tf_buffer_.transform(raw_cloud_msg, transformed_cloud_msg, base_frame_);
+  // } catch (tf2::TransformException &ex) {
+  //   ROS_WARN("TF transform failed: %s", ex.what());
+  //   return true;
+  // }
+
+  // Visulization: Publish obj pointcloud
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr object_cluster = merged_objects.front().pointcloud;
+  sensor_msgs::PointCloud2 obj_msg;
+  pcl::toROSMsg(*object_cluster, obj_msg);
+  obj_msg.header.frame_id = base_frame_;
+  obj_msg.header.stamp = ros::Time::now();
+  pc_pub.publish(obj_msg);
+  ROS_WARN("Published object pointcloud with %d points", (int)object_cluster->size());
+
   // 5. Calculate orientation from cluster
-  double rect_angle = getOrientationFomCluster(obj_cluster);  // fitted rectangle rotation [-90,0) deg.
+  // double rect_angle = getOrientationFomCluster(obj_cluster);  // fitted rectangle rotation [-90,0) deg.
+  double rect_angle = merged_objects.front().angle_deg;  
   if (rect_angle == 0.0) {  
     moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
     return true;  
   }
   double actual_angle = findActualAngle(shape_type, rect_angle);  // actual rotation
   double new_yaw = actual_angle * CV_PI / 180.0;                  // convert to radians
+  double size = merged_objects.front().unit_size_x;
 
   ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
   ROS_INFO("Actual object rotation: %.2f deg", actual_angle); 
@@ -134,7 +197,7 @@ cw2::t1_callback(cw2_world_spawner::Task1Service::Request &request,
 
   // 7. Adjust x,y positions (grasping strategy)
   ROS_DEBUG("Adjusting XY...");
-  if (!moveHorizontally(object_point, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01})) {
+  if (!moveHorizontally(object_point, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01}, size)) {
     ROS_ERROR("Failed to adjust XY.");
     moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
   return true;
@@ -247,7 +310,6 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
   mystery_pose.pose.position = request.mystery_object_point.point;
   mystery_pose.pose.position.z += 0.6; // Adjust height
   reference_pose.pose.position.z += 0.6; // Adjust height
-  std::vector<PointCPtr> clusters;
 
   // === Step 1: Inspect the mystery object ===
 
@@ -261,20 +323,16 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 
   // Segment the point cloud into objects
   colorFilter(cloud_ptr_, filtered_cloud_ptr_);
-  clusters.clear();
   merged_objects.clear();
-  segmentObject(filtered_cloud_ptr_, clusters);
-  updateMergedObjects(clusters);
-  refineObjectMerging();
+  classifyClustersFromMergedCloud(filtered_cloud_ptr_);
 
   // Check if any objects were detected
   if (merged_objects.empty()) {
-    ROS_WARN("No object detected at mystery point.");
-    response.mystery_object_num = 0;
+    ROS_WARN("No object detected at mystery point, retry the Task.");
     return true;
   }
 
-  // Print the detected objects (DEBUG)
+  // Print the detected objects
   std::string mystery_shape = merged_objects.front().shape;
   ROS_INFO("Mystery object shape: %s", mystery_shape.c_str());
 
@@ -291,17 +349,15 @@ cw2::t2_callback(cw2_world_spawner::Task2Service::Request &request,
 
   // Segment the point cloud into objects
   merged_objects.clear();
-  segmentObject(filtered_cloud_ptr_, clusters);
-  updateMergedObjects(clusters);
-  refineObjectMerging();
+  classifyClustersFromMergedCloud(filtered_cloud_ptr_);
 
   // Check if any objects were detected
   if (merged_objects.empty()) {
-    ROS_ERROR("No object detected at reference point.");
+    ROS_ERROR("No object detected at reference point, retry the Task.");
     return true;
   }
 
-  // Print the detected objects (DEBUG)
+  // Print the detected objects
   std::string ref_shape = merged_objects.front().shape;
   ROS_INFO("Reference object shape: %s", ref_shape.c_str());
 
@@ -357,11 +413,11 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   // 1. Scan objects & basket
   std::vector<geometry_msgs::PoseStamped> camera_view_poses;
-  geometry_msgs::PoseStamped pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8;
+  geometry_msgs::PoseStamped pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8, pose9, pose10;
   
   // === Viewpoint 1: Bottom Right ===
-  pose1.pose.position.x = 0.468;
-  pose1.pose.position.y = 0.265;
+  pose1.pose.position.x = 0.468 - 0.057;
+  pose1.pose.position.y = 0.268;
   pose1.pose.position.z = current_pose.pose.position.z;
 
   // === Viewpoint 2: Bottom Center ===
@@ -370,47 +426,112 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   // === Viewpoint 3: Bottom Left ===
   pose3 = pose1;
-  pose3.pose.position.y = -0.265;
+  pose3.pose.position.y = -0.268;
 
-  // === Viewpoint 4: Left Center ===
+  // === Viewpoint 4: Left Center lower ===
   pose4 = pose3;
-  pose4.pose.position.x = 0;
+  pose4.pose.position.x = 0.1;
 
-  // === Viewpoint 5: Top Left ===
-  pose5 = pose3;
-  pose5.pose.position.x = -0.468;
+  // === Viewpoint 5 : Left Center upper ===
+  pose5 = pose4;
+  pose5.pose.position.x = -0.1;
 
-  // === Viewpoint 6: Top Center ===
-  pose6 = pose5;
-  pose6.pose.position.y = 0.0;
+  // === Viewpoint 6: Top Left ===
+  pose6 = pose3;
+  pose6.pose.position.x = -0.468 + 0.05;
 
-  // === Viewpoint 7: Top Right ===
-  pose7 = pose5;
-  pose7.pose.position.y = 0.265;
+  // === Viewpoint 7: Top Center ===
+  pose7 = pose6;
+  pose7.pose.position.y = 0.0;
+  
+  // === Viewpoint 8: Top Right ===
+  pose8 = pose6;
+  pose8.pose.position.y = 0.268;
 
-  // === Viewpoint 8: Right Center ===
-  pose8 = pose7;
-  pose8.pose.position.x = 0.0;
+  // === Viewpoint 9: Right Center upper ===
+  pose9 = pose8;
+  pose9.pose.position.x = -0.1;
 
-  camera_view_poses = {pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8};
+  // === Viewpoint 10: Right Center lower ===
+  pose10 = pose8;
+  pose10.pose.position.x = 0.1;
 
-  merged_objects.clear();
+  camera_view_poses = {pose1, pose2, pose3, pose4, pose5, pose6, pose7, pose8, pose9, pose10};
+
+
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr merged_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
 
   for (const auto& pose : camera_view_poses) {
     moveToPoseWithFallback(pose);
-    ros::Duration(1.5).sleep();
-  
+    // Wait for the robot to stabilize
+    ros::Duration(2.0).sleep();
+    ros::spinOnce();
+    ros::Duration(0.2).sleep();
+    ros::spinOnce();
+    ros::Duration(0.2).sleep();
 
     colorFilter(cloud_ptr_, filtered_cloud_ptr_);
-    std::vector<PointCPtr> clusters;
-    segmentObject(filtered_cloud_ptr_, clusters);
-    updateMergedObjects(clusters);
+    // Transform point cloud to base_frame
+    sensor_msgs::PointCloud2 cloud_msg;
+    pcl::toROSMsg(*filtered_cloud_ptr_, cloud_msg);
+    cloud_msg.header.frame_id = cloud_ptr_->header.frame_id;
+
+    geometry_msgs::TransformStamped transform_stamped;
+
+    try {
+      transform_stamped = tf_buffer_.lookupTransform(
+        base_frame_,
+        cloud_ptr_->header.frame_id,
+        ros::Time(0),
+        ros::Duration(1.0)
+      );
+    } catch (tf2::TransformException &ex) {
+      ROS_WARN("TF lookup failed: %s", ex.what());
+      return false;
+    }
+
+    cloud_msg.header.stamp = transform_stamped.header.stamp;
+
+    sensor_msgs::PointCloud2 transformed_cloud_msg;
+    try {
+      tf_buffer_.transform(cloud_msg, transformed_cloud_msg, base_frame_);
+    } catch (tf2::TransformException &ex) {
+      ROS_WARN("TF transform failed: %s", ex.what());
+      continue;
+    }
+
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
+    pcl::fromROSMsg(transformed_cloud_msg, *transformed_cloud);
+    // Add to the merged cloud
+    *merged_cloud += *transformed_cloud;
+
+  }
+  
+  // // Publish the merged cloud
+  // sensor_msgs::PointCloud2 merged_msg;
+  // pcl::toROSMsg(*merged_cloud, merged_msg);
+  // merged_msg.header.frame_id = base_frame_;
+  // merged_msg.header.stamp = ros::Time::now();
+  // pc_pub.publish(merged_msg);
+  // ROS_INFO("Published merged cloud with %d points", (int)merged_cloud->size());
+
+  merged_objects.clear();
+  classifyClustersFromMergedCloud(merged_cloud);
+
+  double min_dist = std::numeric_limits<double>::max();
+  const MultiViewObject* target = nullptr;
+  const MultiViewObject* basket_obj = nullptr;
+  // print the summary of detected objects
+  for (const auto& obj : merged_objects) {
+    ROS_INFO("Detected object: Shape=%s, Color=%s, Position=(%.3f, %.3f, %.3f), Angle=%.3f, Point Count=%d, Size=%.3f",
+             obj.shape.c_str(), obj.color.c_str(), obj.center_x, obj.center_y, obj.center_z, obj.angle_deg, obj.point_count, obj.unit_size_x);
+    if (obj.shape == "basket") {
+      basket_obj = &obj;
+    }
   }
 
-  refineObjectMerging();
-  determineObjectFromVotes();
 
-  // 2. Print & count all detected objects 
+  // 2.print and count all detected objects 
   int cross_count = 0;
   int nought_count = 0;
   int black_count = 0;
@@ -426,7 +547,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
 
   }
 
-  ROS_INFO("Merged Summary -> Cross: %d, Nought: %d, Black (obstacles): %d",
+  ROS_INFO("Count Summary -> Cross: %d, Nought: %d, Black (obstacles): %d",
            cross_count, nought_count, black_count);
 
 
@@ -444,7 +565,7 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
     candidate_shapes.push_back("cross");
     candidate_shapes.push_back("nought");
     most_common_shape_count = cross_count;
-    ROS_WARN("Equal number of cross and nought. Considering both.");
+    ROS_INFO("Equal number of cross and nought. Considering both.");
   } else {
     ROS_ERROR("No valid cross or nought objects found.");
     return false;
@@ -454,203 +575,198 @@ cw2::t3_callback(cw2_world_spawner::Task3Service::Request &request,
   ROS_INFO("Total number of shapes: %d", cross_count + nought_count);
 
   // service response
-  // response.success = true;
   response.total_num_shapes = cross_count + nought_count;
   response.num_most_common_shape = most_common_shape_count;
 
 
-   // 4. Find closest object among candidate shapes
-  double min_dist = std::numeric_limits<double>::max();
-  const MultiViewObject* target = nullptr;
+   // Step 3: Find closest object among candidate shapes
+    for (const auto& obj : merged_objects) {
+      if (obj.color == "black") continue;
+      if (std::find(candidate_shapes.begin(), candidate_shapes.end(), obj.shape) == candidate_shapes.end()) continue;
 
-  for (const auto& obj : merged_objects) {
-    if (obj.color == "black") continue;
-    if (std::find(candidate_shapes.begin(), candidate_shapes.end(), obj.shape) == candidate_shapes.end()) continue;
+      double dx = obj.center_x - current_pose.pose.position.x;
+      double dy = obj.center_y - current_pose.pose.position.y;
+      double dz = obj.center_z - current_pose.pose.position.z;
 
-    double dist = std::hypot(obj.center_x, obj.center_y);
-    if (dist < min_dist) {
-      min_dist = dist;
-      target = &obj;
+      double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (dist < min_dist) {
+        min_dist = dist;
+        target = &obj;
+      }
     }
-  }
 
   if (!target) {
     ROS_ERROR("No valid object matched for pickup.");
     return false;
   }
 
-  // 5. Find the basket (one with most points in the cloud)
-  const MultiViewObject* basket_obj = nullptr;
-  int max_basket_points = -1;
+  if (basket_obj) {
+    ROS_INFO("Basket position: (%.3f, %.3f, %.3f)", basket_obj->center_x, basket_obj->center_y, basket_obj->center_z);
+  } else {
+    ROS_WARN("Basket object not found.");
+  }
+  ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f, %.3f), Angle=%.3f, Point Count=%d, Size=%.3f",
+           target->shape.c_str(), target->center_x, target->center_y, target->center_z, target->angle_deg, target->point_count, target->unit_size_x);
 
-  for (const auto& obj : merged_objects) {
-    if (obj.shape == "basket" && obj.point_count > max_basket_points) {
-      basket_obj = &obj;
-      max_basket_points = obj.point_count;
-    }
+  //Visulization: Publish obj pointcloud
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr object_cluster = target->pointcloud;
+  sensor_msgs::PointCloud2 obj_msg;
+  pcl::toROSMsg(*object_cluster, obj_msg);
+  obj_msg.header.frame_id = base_frame_;
+  obj_msg.header.stamp = ros::Time::now();
+  pc_pub.publish(obj_msg);
+  ROS_WARN("Published object pointcloud with %d points", (int)object_cluster->size());
+
+  geometry_msgs::PointStamped object_point;
+  geometry_msgs::PointStamped basket_point;
+  
+  object_point.point.x = target->center_x;
+  object_point.point.y = target->center_y;
+  object_point.point.z = target->center_z;
+  std::string shape_type = target->shape;
+  object_point.header.frame_id = base_frame_;
+  PointCPtr obj_cluster = target->pointcloud;
+  double size = target->unit_size_x;
+
+  basket_point.point.x = basket_obj->center_x;
+  basket_point.point.y = basket_obj->center_y;
+  basket_point.point.z = basket_obj->center_z;
+  basket_point.header.frame_id = base_frame_;
+
+  // Move the arm above the object
+  // Return to home first to avoid plan collisions
+  ros::Duration(0.5).sleep();
+  ROS_DEBUG("Returning back to 'ready'...");
+  if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
+    ROS_WARN("Back to 'ready' (ignore time error if successfully reached.)");
+    return true;
   }
 
-  if (!basket_obj) {
-  ROS_WARN("Basket not detected. Using default basket position.");
-    static MultiViewObject default_basket_obj;
-    default_basket_obj.center_x = -0.41 - 0.045;
-    default_basket_obj.center_y = -0.36;
-    default_basket_obj.shape = "basket";
-    default_basket_obj.color = "darkred";
-    basket_obj = &default_basket_obj;
+
+  ROS_DEBUG("Moving above the object...");
+  if (!moveAboveObject(object_point, 0.004, {0.005, 0.01, 0.005})) {
+    ROS_ERROR("Failed to move above the object.");
+    return true;
   }
-  ROS_INFO("Target to pick: Shape=%s, Position=(%.3f, %.3f)", target->shape.c_str(),
-           target->center_x, target->center_y);
-  ROS_INFO("Basket position: (%.3f, %.3f)", basket_obj->center_x, basket_obj->center_y);
 
-
-  // PICK AND PLACE TASK 3 (same method than in task 1)
-  // REPLACE OPOINT by object point & BPOINT by goal/basket point
-
-  // // Move the arm above the object
-  // ROS_DEBUG("Moving above the object...");
-  // if (!moveAboveObject(OPOINT, 0.004, {0.005, 0.01, 0.005})) {
-  //   ROS_ERROR("Failed to move above the object.");
-  //   return true;
-  // }
-
-  // // Raise the arm to get larger FoV
-  // geometry_msgs::PoseStamped fov_pose = arm_group_.getCurrentPose();
-  // fov_pose.pose.position.z = OPOINT.point.z + 0.75;
-  // ROS_DEBUG("Lifting the arm...");
-  // if (!moveArmUpDown(fov_pose, "raiseArmToLargerFOV", 0.002, {0.005, 0.01, 0.005})) {
-  //   ROS_ERROR("Failed to raise the arm.");
-  //   return true;
-  // }
-
-  // // Allow some time to process the pointcloud
-  // ros::AsyncSpinner spinner(2);
-  // spinner.start();
-  // ros::Duration(1.5).sleep();
-  // OPOINT.header.stamp = ros::Time::now();
-  // ros::Duration(1.5).sleep();
-  // spinner.stop();
-
-  // // 4. Extract object cluster
-  // PointCPtr obj_cluster = getObjectCluster(OPOINT);
-  // if (!obj_cluster || obj_cluster->empty()) {
-  //   ROS_ERROR("Failed to extract object cluster.");  // e.g.) 0 points along z-axis
-  //   moveToReadyPose(1.0, 1.0, {0.02, 0.02, 0.02});  
-  //   return true;
-  // }
-
-  // // Calculate orientation from cluster
+  // Calculate orientation from cluster
   // double rect_angle = getOrientationFomCluster(obj_cluster);  // fitted rectangle rotation [-90,0) deg.
-  // if (rect_angle == 0.0) {  
+  double rect_angle = target->angle_deg;
+  // if (rect_angle == 0.0) {
+  //   ROS_ERROR("No rotation detected, moving to ready pose.");  
   //   moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
   //   return true;  
   // }
-  // double actual_angle = findActualAngle(shape_type, rect_angle);  // actual rotation
-  // double new_yaw = actual_angle * CV_PI / 180.0;                  // convert to radians
 
-  // ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
-  // ROS_INFO("Actual object rotation: %.2f deg", actual_angle); 
+  double actual_angle = findActualAngle(shape_type, rect_angle);  // actual rotation
+  double new_yaw = actual_angle * CV_PI / 180.0;                  // convert to radians
+
+  ROS_INFO("Rotated rectangle angle: %.2f deg", rect_angle);
+  ROS_INFO("Actual object rotation: %.2f deg", actual_angle); 
   
-  // // Lower the arm to increase dexterity (recommended when object located in corners)
-  // geometry_msgs::PoseStamped adjust_pose = arm_group_.getCurrentPose();
-  // adjust_pose.pose.position.z -= 0.40;
-  // ROS_DEBUG("Lowering the arm...");
-  // if (!moveArmUpDown(adjust_pose, "lowerArmToAdjust", 0.005, {0.01, 0.01, 0.01})) {
-  //   ROS_ERROR("Failed to lower the arm");
-  //   return true;
-  // }
+  // Lower the arm to increase dexterity (recommended when object located in corners)
+  geometry_msgs::PoseStamped adjust_pose = arm_group_.getCurrentPose();
+  adjust_pose.pose.position.z -= 0.40;
+  ROS_DEBUG("Lowering the arm...");
+  if (!moveArmUpDown(adjust_pose, "lowerArmToAdjust", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lower the arm");
+    return true;
+  }
 
-  // // Adjust x,y positions (grasping strategy)
-  // ROS_DEBUG("Adjusting XY...");
-  // if (!moveHorizontally(OPOINT, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01})) {
-  //   ROS_ERROR("Failed to adjust XY.");
-  //   moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
-  // return true;
-  // }
-  // ROS_DEBUG("XY adjusted successfully.");
+  // Adjust x,y positions (grasping strategy)
+  ROS_DEBUG("Adjusting XY...");
+  if (!moveHorizontally(object_point, shape_type, new_yaw, "adjustArmXY", 0.001, {0.01, 0.005, 0.01}, size)) {
+    ROS_ERROR("Failed to adjust XY.");
+    moveToReadyPose(0.5, 0.5, {0.02, 0.02, 0.02});
+  return true;
+  }
+  ROS_DEBUG("XY adjusted successfully.");
   
-  // // Adjust yaw angle (grasping strategy)
-  // ROS_DEBUG("Adjusting yaw angle...");
-  // if (!adjustYaw(shape_type, new_yaw, 0.4, 0.4, {0.03, 0.02, 0.05})) {
-  //   ROS_WARN("Arm rotation not or poorly completed.");
-  // return true;
-  // }
-  // ROS_DEBUG("Yaw adjusted successfully.");
+  // Adjust yaw angle (grasping strategy)
+  ROS_DEBUG("Adjusting yaw angle...");
+  if (!adjustYaw(shape_type, new_yaw, 0.4, 0.4, {0.03, 0.02, 0.05})) {
+    ROS_WARN("Arm rotation not or poorly completed.");
+  return true;
+  }
+  ROS_DEBUG("Yaw adjusted successfully.");
 
-  // // Open the gripper
-  // ROS_DEBUG("Opening the gripper...");
-  // if (!toggleGripper(gripper_open_, "openGripper", 1.0, 1.0)) {
-  //   ROS_ERROR("Failed to open the gripper.");
-  //   return true;
-  // }
+  // Open the gripper
+  ROS_DEBUG("Opening the gripper...");
+  if (!toggleGripper(gripper_open_, "openGripper", 1.0, 1.0)) {
+    ROS_ERROR("Failed to open the gripper.");
+    return true;
+  }
 
-  // // Lower the arm to pick the object
-  // geometry_msgs::PoseStamped pick_pose = arm_group_.getCurrentPose();
-  // pick_pose.pose.position.z = OPOINT.point.z + fingertip_offset + 0.08;
-  // ROS_DEBUG("Lowering the arm...");
-  // if (!moveArmUpDown(pick_pose, "lowerArmToPick", 0.005, {0.01, 0.01, 0.01})) {
-  //   ROS_ERROR("Failed to lower the arm.");
-  //   return true;
-  // }
+  // Lower the arm to pick the object
+  geometry_msgs::PoseStamped pick_pose = arm_group_.getCurrentPose();
+  pick_pose.pose.position.z = object_point.point.z + fingertip_offset + 0.03;
+  ROS_DEBUG("Lowering the arm...");
+  if (!moveArmUpDown(pick_pose, "lowerArmToPick", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lower the arm.");
+    return true;
+  }
 
-  // // Close the gripper
-  // ROS_DEBUG("Closing the gripper...");
-  // if (!toggleGripper(gripper_closed_, "closeGripper", 0.5, 0.5)) {
-  //   ROS_ERROR("Failed to close the gripper.");
-  //   return true;
-  // }
+  // Close the gripper
+  ROS_DEBUG("Closing the gripper...");
+  if (!toggleGripper(gripper_closed_, "closeGripper", 0.5, 0.5)) {
+    ROS_ERROR("Failed to close the gripper.");
+    return true;
+  }
 
-  // // Lift the object at a safe height
-  // geometry_msgs::PoseStamped lift_pose = arm_group_.getCurrentPose();
-  // lift_pose.pose.position.z = BPOINT.point.z + 0.33 + fingertip_offset + 0.14;
-  // ROS_DEBUG("Lifting the object...");
-  // if (!moveArmUpDown(lift_pose, "liftObject", 0.005, {0.01, 0.01, 0.01})) {
-  //   ROS_ERROR("Failed to lift the object.");
-  //   return true;
-  // }
+  // Lift the object at a safe height
+  geometry_msgs::PoseStamped lift_pose = arm_group_.getCurrentPose();
+  lift_pose.pose.position.z = basket_point.point.z + 0.33 + fingertip_offset + 0.14;
+  ROS_DEBUG("Lifting the object...");
+  if (!moveArmUpDown(lift_pose, "liftObject", 0.005, {0.01, 0.01, 0.01})) {
+    ROS_ERROR("Failed to lift the object.");
+    return true;
+  }
 
-  // // Move the arm above the basket
-  // if (is_diagonal) {  // check diagonality
-  //   ROS_INFO("Object & basket in diagonally opposite quadrants. Rotating base joint...");
-  //   std::vector<double> joint_target = arm_group_.getCurrentJointValues();
-  //   joint_target[0] -= M_PI_2; // rotate base joint by 90 deg to simplify planning
-  //   arm_group_.setJointValueTarget(joint_target);
-  //   if (!arm_group_.move()) {
-  //     ROS_WARN("Base rotated with Timed_Out error.");
-  //   }
-  // }
-  // ROS_DEBUG("Moving above the basket...");
-  // if (!moveHorizontally(BPOINT, shape_type, new_yaw, "moveAboveBasket", 0.005, {0.02, 0.025, 0.25})) {
-  //   ROS_ERROR("Failed to move above the basket.");
-  //   moveToReadyPose(0.25, 0.25, {0.02, 0.02, 0.02});
-  //   return true;
-  // }
+  // Move the arm above the basket
+  bool is_diagonal = (object_point.point.x * basket_point.point.x < 0) &&  // opposite x signs
+                      (object_point.point.y * basket_point.point.y < 0);   // opposite y signs
+  if (is_diagonal) {  // check diagonality
+    ROS_INFO("Object & basket in diagonally opposite quadrants. Rotating base joint...");
+    std::vector<double> joint_target = arm_group_.getCurrentJointValues();
+    joint_target[0] -= M_PI_2; // rotate base joint by 90 deg to simplify planning
+    arm_group_.setJointValueTarget(joint_target);
+    if (!arm_group_.move()) {
+      ROS_WARN("Base rotated with Timed_Out error.");
+    }
+  }
+  ROS_DEBUG("Moving above the basket...");
+  if (!moveHorizontally(basket_point, shape_type, new_yaw, "moveAboveBasket", 0.005, {0.02, 0.025, 0.25})) {
+    ROS_ERROR("Failed to move above the basket.");
+    moveToReadyPose(0.25, 0.25, {0.02, 0.02, 0.02});
+    return true;
+  }
 
-  // // Lower the arm to safe release height
-  // geometry_msgs::PoseStamped release_pose = arm_group_.getCurrentPose();
-  // release_pose.pose.position.z = BPOINT.point.z + 0.05 + fingertip_offset + 0.25;
-  // ROS_DEBUG("Lowering the object...");
-  // if (!moveArmUpDown(release_pose, "releasePose", 0.002, {0.025, 0.03, 0.3})) {
-  //   ROS_WARN("Failed to lower the object at safe height."); 
-  //   // return true;  // often acceptable
-  // }
+  // Lower the arm to safe release height
+  geometry_msgs::PoseStamped release_pose = arm_group_.getCurrentPose();
+  release_pose.pose.position.z = basket_point.point.z + 0.05 + fingertip_offset + 0.25;
+  ROS_DEBUG("Lowering the object...");
+  if (!moveArmUpDown(release_pose, "releasePose", 0.002, {0.025, 0.03, 0.3})) {
+    ROS_WARN("Failed to lower the object at safe height."); 
+    // return true;  // often acceptable
+  }
 
-  // // Release object into the basket.
-  // ROS_DEBUG("Releasing the gripper...");
-  // if (!toggleGripper(gripper_open_, "releaseObject", 1.0, 1.0)) {
-  //   ROS_ERROR("Failed to release the object.");
-  //   return true;
-  // }
+  // Release object into the basket.
+  ROS_DEBUG("Releasing the gripper...");
+  if (!toggleGripper(gripper_open_, "releaseObject", 1.0, 1.0)) {
+    ROS_ERROR("Failed to release the object.");
+    return true;
+  }
 
-  // // Return to home
-  // ros::Duration(0.5).sleep();
-  // ROS_DEBUG("Returning back to 'ready'...");
-  // if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
-  //   ROS_WARN("Back to 'ready' (ignore time error if successfully reached.)");
-  //   return true;
-  // }
+  // Return to home
+  ros::Duration(0.5).sleep();
+  ROS_DEBUG("Returning back to 'ready'...");
+  if (!moveToReadyPose(0.3, 0.3, {0.02, 0.02, 0.01})) {
+    ROS_WARN("Back to 'ready' (ignore time error if successfully reached.)");
+    return true;
+  }
 
-  // ROS_INFO("Task 3 completed successfully.");
+  ROS_INFO("Task 3 completed successfully.");
 
   return true;
 }
@@ -709,7 +825,10 @@ cw2::moveAboveObject(const geometry_msgs::PointStamped &object_point,
   if (!planAndExecuteCartesian(waypoints, "moveAboveObject", eef_step)) {
     ROS_ERROR("moveAboveObject: Motion failed after multiple attempts.");
     // No need to reset default parameters & tolerances (already reset in helper)
+    if (arm_group_.move() != moveit::planning_interface::MoveItErrorCode::SUCCESS) {
+      ROS_ERROR("Fallback moveToPose also failed.");
     return false;
+    }
   }
   return true;
 }
@@ -748,7 +867,8 @@ cw2::moveHorizontally(const geometry_msgs::PointStamped &point,
                       double new_yaw,
                       const std::string &action_name,
                       double eef_step,
-                      std::vector<double> tolerances)
+                      std::vector<double> tolerances,
+                      double size)
 {
 
   // Get current pose
@@ -765,29 +885,92 @@ cw2::moveHorizontally(const geometry_msgs::PointStamped &point,
 
   // Define offsets (pick-and-place strategy)
   if (shape_type == "nought") { 
-    if (is_yaw_small) {  // no need to account for rotation when angle < 5 deg. (linear offset)
-      y_offset = 0.08;  
-    } else {             // apply rotated offsets      
-      if (is_yaw_pos) {
-        x_offset = - 0.08 * sin(new_yaw);  
-        y_offset = 0.08 * cos(new_yaw);    // counter-clockwise -> positive y-direction
-      } else {
-        x_offset = 0.08 * sin(new_yaw);
-        y_offset = - 0.08 * cos(new_yaw);  // clockwise -> negative y-direction
+    // size = 0.4
+    if (std::abs(size - 0.4) < 1e-3) {
+      if (is_yaw_small) {  // no need to account for rotation when angle < 5 deg. (linear offset)
+        y_offset = 0.08;  
+      } else {             // apply rotated offsets      
+        if (is_yaw_pos) {
+          x_offset = - 0.08 * sin(new_yaw);  
+          y_offset = 0.08 * cos(new_yaw);    // counter-clockwise -> positive y-direction
+        } else {
+          x_offset = 0.08 * sin(new_yaw);
+          y_offset = - 0.08 * cos(new_yaw);  // clockwise -> negative y-direction
 
+        }
+      } 
+    }
+    // size = 0.3
+    else if (std::abs(size - 0.3) < 1e-3) {
+      if (is_yaw_small) {
+        y_offset = 0.07;
+      } else {
+        if (is_yaw_pos) {
+          x_offset = - 0.07 * sin(new_yaw);
+          y_offset = 0.07 * cos(new_yaw);
+        } else {
+          x_offset = 0.07 * sin(new_yaw);
+          y_offset = - 0.07 * cos(new_yaw);
+        }
       }
     }
+    // size = 0.2
+    else if (std::abs(size - 0.2) < 1e-3) {
+      if (is_yaw_small) {
+        y_offset = 0.06;
+      } else {
+        if (is_yaw_pos) {
+          x_offset = - 0.06 * sin(new_yaw);
+          y_offset = 0.06 * cos(new_yaw);
+        } else {
+          x_offset = 0.06 * sin(new_yaw);
+          y_offset = - 0.06 * cos(new_yaw);
+        }
+      }
+    }
+
   } 
   else if (shape_type == "cross") {  // same strategy but with smaller offsets
-    if (is_yaw_small) {
-      x_offset = 0.055;
-    } else {
-      if (is_yaw_pos) {
-        x_offset = -0.058 * sin(new_yaw);
-        y_offset = 0.058 * cos(new_yaw);
+    // size = 0.4
+    if (std::abs(size - 0.4) < 1e-3) {
+      if (is_yaw_small) {
+        x_offset = 0.055;
       } else {
-        x_offset = 0.058 * sin(new_yaw);
-        y_offset = - 0.058 * cos(new_yaw);
+        if (is_yaw_pos) {
+          x_offset = -0.058 * sin(new_yaw);
+          y_offset = 0.058 * cos(new_yaw);
+        } else {
+          x_offset = 0.058 * sin(new_yaw);
+          y_offset = - 0.058 * cos(new_yaw);
+        }
+      }
+    }
+    // size = 0.3
+    else if (std::abs(size - 0.3) < 1e-3) {
+      if (is_yaw_small) {
+        x_offset = 0.045;
+      } else {
+        if (is_yaw_pos) {
+          x_offset = -0.048 * sin(new_yaw);
+          y_offset = 0.048 * cos(new_yaw);
+        } else {
+          x_offset = 0.048 * sin(new_yaw);
+          y_offset = - 0.048 * cos(new_yaw);
+        }
+      }
+    }
+    // size = 0.2
+    else if (std::abs(size - 0.2) < 1e-3) {
+      if (is_yaw_small) {
+        x_offset = 0.035;
+      } else {
+        if (is_yaw_pos) {
+          x_offset = -0.038 * sin(new_yaw);
+          y_offset = 0.038 * cos(new_yaw);
+        } else {
+          x_offset = 0.038 * sin(new_yaw);
+          y_offset = - 0.038 * cos(new_yaw);
+        }
       }
     }
   }
@@ -1154,139 +1337,25 @@ cw2::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg)
 
   // Convert ROS message to PCL pointcloud pointer
   pcl::fromROSMsg(*cloud_msg, *cloud_ptr_);
-
-  // Debug:
-  pubFilteredPCMsg(pc_pub, *filtered_cloud_ptr_);
 }
 
-// -------------------------------------------------------------------------------------------
-void
-cw2::pubFilteredPCMsg(ros::Publisher &pc_pub, PointC &pc)
-{
-  // Convert PCL pointcloud to ROS message
-  pcl::toROSMsg(pc, filtered_cloud_msg);
+// ------------------------------------------------------------------------------------------- DELETE
+// void
+// cw2::pubFilteredPCMsg(ros::Publisher &pc_pub, PointC &pc)
+// {
+//   // Convert PCL pointcloud to ROS message
+//   pcl::toROSMsg(pc, filtered_cloud_msg);
 
-  // Assing a header
-  filtered_cloud_msg.header.stamp = ros::Time::now();
-  filtered_cloud_msg.header.frame_id = "color";
+//   // Assing a header
+//   filtered_cloud_msg.header.stamp = ros::Time::now();
+//   filtered_cloud_msg.header.frame_id = "color";
 
-  // Publish pointcloud
-  pc_pub.publish(filtered_cloud_msg);
-  // ROS_INFO("Published filtered cloud with %d points", (int)pc.size());
-}
+//   // Publish pointcloud
+//   pc_pub.publish(filtered_cloud_msg);
+//   // ROS_INFO("Published filtered cloud with %d points", (int)pc.size());
+// }
 
-// ----------------------------------------------------------------------------
-PointCPtr
-cw2::getObjectCluster(const geometry_msgs::PointStamped &object_point) 
-{
-  // Check input pointcloud
-  if (!cloud_ptr_ || cloud_ptr_->empty()) {
-      ROS_ERROR("Input pointcloud not initialized or empty.");
-      return nullptr;
-  }
 
-  // Count number of points
-  ROS_INFO("Input cloud has %lu points", cloud_ptr_->points.size());
-
-  // // Debug: Check object pointcloud dimensions using Eigen vectors
-  // Eigen::Vector4f min_pt, max_pt;
-  // pcl::getMinMax3D(*cloud_ptr_, min_pt, max_pt);
-  // ROS_INFO("Cloud bounds: \n\tX: [%.3f, %.3f]\n\tY: [%.3f, %.3f]\n\tZ: [%.3f, %.3f]", 
-  //         min_pt[0], max_pt[0], min_pt[1], max_pt[1], min_pt[2], max_pt[2]);
-
-  // Create a new point cloud for the cluster
-  PointCPtr cluster(new PointC);
-
-  // Transform object_point to camera frame
-  geometry_msgs::PointStamped object_cam_frame;
-  try {
-    object_cam_frame = tf_buffer_.transform(object_point,
-                                            cloud_ptr_->header.frame_id,
-                                            ros::Duration(1.0));
-    // ROS_INFO_STREAM("Transform: " << object_cam_frame);
-  } catch (tf2::TransformException &ex) {
-    ROS_WARN("TF transform failed: %s", ex.what());
-    return nullptr;
-  };
-
-  // Define plane centers
-  double center_x = object_cam_frame.point.x;
-  double center_y = object_cam_frame.point.y;
-
-  // Define pass-through filter
-  pcl::PassThrough<pcl::PointXYZRGBA> pass;
-
-  // Dimensions 
-  const double grid_size = 0.2;  // 200 mm
-  const double margin = 0.04;    // 40 mm
-
-  // Filter along x-axis
-  double x_min = center_x - (grid_size/2 + margin);
-  double x_max = center_x + (grid_size/2 + margin);
-  pass.setInputCloud(cloud_ptr_);
-  pass.setFilterFieldName("x");
-  pass.setFilterLimits(x_min, x_max);
-  pass.filter(*cluster);
-  ROS_INFO("After X filter [%.3f, %.3f]: %lu points", x_min, x_max, cluster->points.size());
-
-  // Filter along y-axis
-  double y_min = center_y - (grid_size/2 + margin);
-  double y_max = center_y + (grid_size/2 + margin);
-  pass.setInputCloud(cluster);
-  pass.setFilterFieldName("y");
-  pass.setFilterLimits(y_min, y_max);
-  pass.filter(*cluster);
-  ROS_INFO("After Y filter [%.3f, %.3f]: %lu points", y_min, y_max, cluster->points.size());
-
-  // Filter along z-axis
-  pass.setInputCloud(cluster);
-  pass.setFilterFieldName("z");
-  double z_max = 0.70;   // camera z-position = 50 mm lower than arm (lifted at 0.8)
-  double z_min = 0.64;   // object height = 40 mm (allow enough margin, but less relevant)
-  pass.setFilterLimits(z_min, z_max);
-  pass.filter(*cluster);
-  ROS_INFO("After Z filter [%.3f, %.3f]: %lu points", z_min, z_max, cluster->points.size());
-
-  if (cluster->points.size() < 1000) {  // Minimum points threshold
-      ROS_WARN("Too few points in cluster.");
-      return nullptr;
-  }
-
-  // // Density normalization with voxel grid filtering (optional)
-  // if (cluster->points.size() >= 1000) {  
-  //   ointCPtr norm_cluster(new PointC);
-  //   pcl::VoxelGrid<pcl::PointXYZRGBA> vg;
-  //   vg.setInputCloud(cluster);
-  //   vg.setLeafSize(0.002f, 0.002f, 0.002f); // 2mm voxel size
-  //   vg.filter(*norm_cluster);
-  //   ROS_INFO("Normalized cluster with %lu points", norm_cluster->points.size());
-  //   cluster = norm_cluster;
-  // } else if (cluster->points.size() < 1000) {
-  //     ROS_WARN("Too few points in cluster.");
-  //     return nullptr;
-  // }
-
-  // // Alternative: color filtering
-  // PointCPtr filtered(new PointC);
-  // filtered->header = cloud_ptr_->header;
-
-  // for (const auto& point : cluster->points) {
-  //   // Extract RGB values
-  //   uint32_t rgb = *reinterpret_cast<const uint32_t*>(&point.rgba);
-  //   uint8_t r = (rgb >> 16) & 0x0000ff;
-  //   uint8_t g = (rgb >> 8) & 0x0000ff;
-  //   uint8_t b = (rgb) & 0x0000ff;
-    
-  //   // Robust green detection
-  //   bool is_green = (g > r) && (g > b) && (g > 60) && (g > (r + b) * 0.9);
-  //   if (!is_green) {
-  //     filtered->points.push_back(point);
-  //   }
-  // }
-  // ROS_INFO("After color filter: %lu points", filtered->points.size());
-
-  return cluster;
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1298,17 +1367,17 @@ cw2::getOrientationFomCluster(const PointCPtr &cluster)
   // Convert cluster to binary image
   cv::Mat binary_img = clusterToBinaryImg(cluster);
 
-  // // Debug: show binary image
-  // std::string package_path = ros::package::getPath("cw2_team_16");
-  // cv::imwrite(package_path + "/debug/binary.png", binaryImg);
-  // ROS_INFO("Saved binary image")
+  // Debug: show binary image
+  std::string package_path = ros::package::getPath("cw2_team_16");
+  cv::imwrite(package_path + "/debug/binary.png", binary_img);
+  ROS_INFO("Saved binary image");
 
   // Extract contours from binary image
   std::vector<std::vector<cv::Point>> contours = extractContours(binary_img);
 
   // // Debug: show contour in green
   // cv::Mat ContoursImg;
-  // cv::cvtColor(binaryImg, ContoursImg, cv::COLOR_GRAY2BGR);
+  // cv::cvtColor(binary_img, ContoursImg, cv::COLOR_GRAY2BGR);
   // cv::drawContours(ContoursImg, contours, -1, cv::Scalar(0,255,0), 1);
   // cv::imwrite(package_path + "/debug/contours.png", ContoursImg);
   // ROS_INFO("Saved image with contours");
@@ -1325,7 +1394,7 @@ cw2::getOrientationFomCluster(const PointCPtr &cluster)
 
   // // Debug: show contour in green & rotated rectangle in red
   // cv::Mat rectImg;
-  // cv::cvtColor(binaryImg, rectImg, cv::COLOR_GRAY2BGR); 
+  // cv::cvtColor(binary_img, rectImg, cv::COLOR_GRAY2BGR); 
   // cv::drawContours(rectImg, contours, 0, cv::Scalar(0, 255, 0), 1); 
   // cv::Point2f vertices[4];
   // contourRect.points(vertices);
@@ -1350,7 +1419,7 @@ cw2::clusterToBinaryImg(const PointCPtr &cluster)
   // ROS_INFO("XY bounding box: %.3f m by %.3f m", box_width, box_height);
 
   // Define resolution
-  double resolution = camera_resolution;
+  double resolution = camera_resolution / 2.0;  // 2 pixels per mm
 
   // Derive image dimensions
   int img_width  = static_cast<int>(std::ceil((box_width) / resolution));
@@ -1373,14 +1442,17 @@ cw2::clusterToBinaryImg(const PointCPtr &cluster)
       binary_img.at<uchar>(h, w) = 255;
     }
   }
-  
+
   // Morphological operations (optional, no particular benefits)
   // cv::erode(binary_img, binary_img, cv::Mat(), cv::Point(-1,-1), 1);
   // cv::morphologyEx(binary_img,
   //                 binary_img,
   //                 cv::MORPH_OPEN,  
   //                 cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2))); 
-
+  cv::bitwise_not(binary_img, binary_img);
+  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+  cv::morphologyEx(binary_img, binary_img, cv::MORPH_OPEN, kernel);
+  cv::flip(binary_img, binary_img, 1);
   return binary_img;
 }
 
@@ -1477,12 +1549,12 @@ void
 cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
   if (!in_cloud_ptr || in_cloud_ptr->empty()) {
     ROS_WARN("Input point cloud is empty, skipping filtering.");
-    out_cloud_ptr.reset(new PointC);
+    out_cloud_ptr.reset(new pcl::PointCloud<pcl::PointXYZRGBA>);  // Ensure output is always valid
     return;
   }
 
-  // Create a new local variable to temporarily store the result
-  PointCPtr temp_cloud(new PointC);  
+  // Create a new local variable to temporarily store the result, avoiding memory sharing issues
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr temp_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>);
 
   for (const auto &point : in_cloud_ptr->points) {
     double r = static_cast<double>(point.r);
@@ -1502,420 +1574,249 @@ cw2::colorFilter(const PointCPtr &in_cloud_ptr, PointCPtr &out_cloud_ptr) {
   temp_cloud->is_dense = true;
 
   // Ensure frame_id is not empty
-  temp_cloud->header.frame_id = "panda_link0";
+  // out_cloud_ptr->header.frame_id = "color"; 
+  out_cloud_ptr->header.frame_id = base_frame_;
+  out_cloud_ptr->header.stamp = ros::Time::now().toNSec();
 
   ROS_INFO("Filtered point cloud has %zu points", temp_cloud->points.size());
 
   // Assign to the external smart pointer after completion
   out_cloud_ptr = temp_cloud;  // Safe assignment
 }
-
-
 ///////////////////////////////////////////////////////////////////////////////
 void 
-cw2::computeObjectCenters(const std::vector<PointCPtr> &clusters) {
-  /* This function computes the centers of detected objects */
-
-  detected_objects.clear(); // Clear old data before computing
-  std::string target_frame = "panda_link0";
-
-  for (const auto &cluster : clusters) {
-    if (cluster->empty()) continue;
-
-    // === Compute centroid ===
-    Eigen::Vector4f centroid;
-    pcl::compute3DCentroid(*cluster, centroid);
-
-    double center_x = static_cast<double>(centroid[0]);
-    double center_y = static_cast<double>(centroid[1]);
-
-    // === Accumulate RGB values for color computation ===
-    double sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
-    int valid_points = 0;
-
-    for (const auto &point : cluster->points) {
-      sum_r += static_cast<double>(point.r);
-      sum_g += static_cast<double>(point.g);
-      sum_b += static_cast<double>(point.b);
-      valid_points++;
-    }
-
-    std::string color = "unknown";
-    if (valid_points > 0) {
-      double avg_r = sum_r / valid_points;
-      double avg_g = sum_g / valid_points;
-      double avg_b = sum_b / valid_points;
-      color = computeColor(avg_r, avg_g, avg_b);
-    }
-
-    // === Transform center point to target frame ===
-    geometry_msgs::PointStamped point_in, point_out;
-    point_in.header.frame_id = latest_pointcloud_->header.frame_id;
-    point_in.header.stamp = latest_pointcloud_->header.stamp;
-    point_in.point.x = center_x;
-    point_in.point.y = center_y;
-    point_in.point.z = 0.0;  // z ignored here
-
-    try {
-      tf_buffer_.transform(point_in, point_out, target_frame, ros::Duration(1.0));
-      center_x = point_out.point.x;
-      center_y = point_out.point.y;
-    } catch (tf2::TransformException &ex) {
-      ROS_WARN("Could not transform object center to %s: %s", target_frame.c_str(), ex.what());
-    }
-
-    // === Store the result ===
-    detected_objects.push_back({center_x, center_y, static_cast<int>(cluster->size()), color});
+cw2::classifyClustersFromMergedCloud(PointCPtr full_cloud) {
+  if (!full_cloud || full_cloud->empty()) {
+    ROS_WARN("Merged cloud is empty.");
+    return;
   }
+  
+  // Remove invalid points
+  pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cleaned(new pcl::PointCloud<pcl::PointXYZRGBA>);
+  std::vector<int> indices;
+  pcl::removeNaNFromPointCloud(*full_cloud, *cleaned, indices);
 
-  ROS_INFO("Detected %zu objects.", detected_objects.size());
+  // Downsample the point cloud
+  pcl::VoxelGrid<pcl::PointXYZRGBA> vg;
+  vg.setInputCloud(cleaned);
+  vg.setLeafSize(0.002f, 0.002f, 0.002f);
+  PointCPtr filtered(new pcl::PointCloud<pcl::PointXYZRGBA>);
+  vg.filter(*filtered);
+
+  // Remove NaN points again
+  std::vector<int> valid_indices;
+  pcl::removeNaNFromPointCloud(*filtered, *filtered, valid_indices);
+
+  // Perform clustering
+  pcl::search::KdTree<pcl::PointXYZRGBA>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGBA>);
+  tree->setInputCloud(filtered);
+  std::vector<pcl::PointIndices> cluster_indices;
+  pcl::EuclideanClusterExtraction<pcl::PointXYZRGBA> ec;
+  ec.setClusterTolerance(0.005);
+  ec.setMinClusterSize(200);
+  ec.setMaxClusterSize(90000);
+  ec.setSearchMethod(tree);
+  ec.setInputCloud(filtered);
+  ec.extract(cluster_indices);
+
+  // Iterate through each cluster
+  int cluster_index = 0; // Initialize an index counter
+  for (const auto& indices : cluster_indices) {
+    PointCPtr cluster_raw(new pcl::PointCloud<pcl::PointXYZRGBA>);
+    for (int idx : indices.indices)
+      cluster_raw->points.push_back(filtered->points[idx]);
+
+    // Further remove NaN points within the cluster
+    PointCPtr cluster(new pcl::PointCloud<pcl::PointXYZRGBA>);
+    std::vector<int> valid_indices;
+    pcl::removeNaNFromPointCloud(*cluster_raw, *cluster, valid_indices);
+
+    if (cluster->empty()) {
+      ROS_WARN("Cluster has no valid points after removing NaNs. Skipping...");
+      continue;
+    }
+
+    // Convert cluster to image and calculate average color
+    cv::Scalar avg_color;
+    cv::Mat image = convertClusterToImage(cluster, 0.0015, avg_color);
+
+    std::string color = computeColor(avg_color[2], avg_color[1], avg_color[0]);
+
+    std::string shape;
+    ShapeInfo info = classifyShapeFromImage(image);
+    double angle_deg = getOrientationFomCluster(cluster);
+
+    if (color == "black") {
+      shape = "obstacle";
+    } else if (color == "darkred") {
+      shape = "basket";
+    } else {
+      shape = info.shape;
+    }
+    
+    geometry_msgs::Point centroid = get3DCenter(cluster);
+
+    // Determine the size of object
+    double size_x;
+    if (shape == "nought") {
+      if (cluster->size() < 3000) {
+        size_x = 0.2;
+      } else if (cluster->size() >= 3000 && cluster->size() < 5800) {
+        size_x = 0.3;
+      } else {
+        size_x = 0.4;
+      }
+    } else if (shape == "cross") {
+      if (cluster->size() < 1800) {
+        size_x = 0.2;
+      } else if (cluster->size() >= 1800 && cluster->size() < 3600) {
+        size_x = 0.3;
+      } else {
+        size_x = 0.4;
+      }
+    } else {
+      size_x = 0.0;
+    }
+
+    // Save the cluster information
+    MultiViewObject obj;
+    obj.shape = shape;
+    obj.color = color;
+    obj.center_x = centroid.x;
+    obj.center_y = centroid.y;
+    obj.center_z = centroid.z;
+    obj.angle_deg = angle_deg;
+    obj.point_count = cluster->size();
+    obj.pointcloud = cluster;
+    obj.unit_size_x = size_x;
+
+    merged_objects.push_back(obj);
+
+    // Increment the index counter
+    ++cluster_index;
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-void
-cw2::segmentObject(PointCPtr &in_cloud_ptr, std::vector<PointCPtr> &clusters) {
-  /* This function segments the point cloud using OpenCV and returns clusters */
-  if (!in_cloud_ptr || in_cloud_ptr->empty()) {
-    ROS_WARN("Input point cloud is empty, skipping OpenCV segmentation.");
-    return;
+ShapeInfo 
+cw2::classifyShapeFromImage(const cv::Mat& image) {
+  ShapeInfo info = {"unknown", 0.0f};
+
+  if (image.empty()) return info;
+
+  // Step 1: Extract the largest contour
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(image.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  if (contours.empty()) return info;
+
+  auto max_it = std::max_element(contours.begin(), contours.end(),
+    [](const std::vector<cv::Point>& a, const std::vector<cv::Point>& b) {
+      return cv::contourArea(a) < cv::contourArea(b);
+  });
+  const auto& main_contour = *max_it;
+
+  // Step 2: Fit a minimum bounding rectangle to extract the angle
+  cv::RotatedRect rect = cv::minAreaRect(main_contour);
+  float angle = rect.angle;
+  info.angle_deg = angle;
+
+  // Step 3: Rotate the image back to align it
+  cv::Point2f center(image.cols / 2.0f, image.rows / 2.0f);
+  cv::Mat rot_mat = cv::getRotationMatrix2D(center, -angle, 1.0);
+  cv::Mat rotated;
+  cv::warpAffine(image, rotated, rot_mat, image.size(), cv::INTER_NEAREST);
+
+  // Step 4: Analyze the central region to determine the hollow level
+  float roi_ratio = 0.3f;
+  int img_w = rotated.cols;
+  int img_h = rotated.rows;
+  int roi_w = static_cast<int>(img_w * roi_ratio);
+  int roi_h = static_cast<int>(img_h * roi_ratio);
+  int cx = img_w / 2;
+  int cy = img_h / 2;
+  cv::Rect center_roi(cx - roi_w / 2, cy - roi_h / 2, roi_w, roi_h);
+  center_roi &= cv::Rect(0, 0, img_w, img_h);
+
+  cv::Mat center_patch = rotated(center_roi);
+  float center_fill = static_cast<float>(cv::countNonZero(center_patch)) / (roi_w * roi_h);
+
+  // Step 5: Identify the shape
+  if (center_fill < 0.2f) {
+    info.shape = "nought";
+  } else if (center_fill > 0.6f) {
+    info.shape = "cross";
+  } else {
+    info.shape = "unknown";
   }
 
-  // ==== Step 1: Compute point cloud bounding box ====
+  return info;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+cv::Mat 
+cw2::convertClusterToImage(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr& cluster,
+                                      float resolution, cv::Scalar& avg_color) {
+  if (!cluster || cluster->empty()) return cv::Mat();
+
   float min_x = FLT_MAX, max_x = -FLT_MAX;
   float min_y = FLT_MAX, max_y = -FLT_MAX;
-  for (const auto &pt : in_cloud_ptr->points) {
+  int r_sum = 0, g_sum = 0, b_sum = 0;
+
+  for (const auto& pt : cluster->points) {
     min_x = std::min(min_x, pt.x);
     max_x = std::max(max_x, pt.x);
     min_y = std::min(min_y, pt.y);
     max_y = std::max(max_y, pt.y);
+    r_sum += pt.r;
+    g_sum += pt.g;
+    b_sum += pt.b;
   }
 
-  // Add padding
-  float padding = 0.02f; // 2cm padding
-  min_x -= padding;
-  max_x += padding;
-  min_y -= padding;
-  max_y += padding;
+  float width = max_x - min_x;
+  float height = max_y - min_y;
+  int img_w = static_cast<int>(width / resolution) + 1;
+  int img_h = static_cast<int>(height / resolution) + 1;
 
-  float roi_width  = max_x - min_x;
-  float roi_height = max_y - min_y;
-  float roi_span   = std::max(roi_width, roi_height); // to make square image
+  cv::Mat image = cv::Mat::zeros(img_h, img_w, CV_8UC1);
 
-  const int img_size = 1024;
-  const float scale = img_size / roi_span; // m -> px
-
-  // ==== Step 2: Project point cloud to image ====
-  cv::Mat image = cv::Mat::zeros(img_size, img_size, CV_8UC1);
-  std::vector<std::vector<int>> pixel_to_point_indices(img_size * img_size);  // map pixel to point indices
-
-  for (size_t i = 0; i < in_cloud_ptr->points.size(); ++i) {
-    const auto &pt = in_cloud_ptr->points[i];
-    int px = static_cast<int>((pt.x - min_x) * scale);
-    int py = static_cast<int>((pt.y - min_y) * scale);
-
-    if (px >= 0 && px < img_size && py >= 0 && py < img_size) {
-      image.at<uchar>(py, px) = 255;
-      pixel_to_point_indices[py * img_size + px].push_back(i);
+  for (const auto& pt : cluster->points) {
+    int u = static_cast<int>((pt.x - min_x) / resolution);
+    int v = static_cast<int>((pt.y - min_y) / resolution);
+    if (u >= 0 && u < img_w && v >= 0 && v < img_h) {
+      image.at<uchar>(v, u) = 255;
     }
   }
 
-  // ==== Step 3: Morphological dilation ====
-  // int dilation_size = (in_cloud_ptr->points.size() < 5000) ? 2 : 1;
-  int dilation_size = 3;
-  cv::Mat dilated;
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT,
-                      cv::Size(2 * dilation_size + 1, 2 * dilation_size + 1));
-  cv::dilate(image, dilated, kernel);
+  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+  cv::dilate(image, image, kernel);
 
-  // ==== Step 4: Connected components ====
-  cv::Mat labels;
-  int num_labels = cv::connectedComponents(dilated, labels, 8, CV_32S);
+  int num = cluster->points.size();
+  avg_color = cv::Scalar(b_sum / num, g_sum / num, r_sum / num);  // OpenCV uses BGR
 
-  // ==== Step 5: Map back to point cloud ====
-  clusters.clear();
-  clusters.resize(num_labels - 1);
-  for (int i = 0; i < num_labels - 1; ++i) {
-      clusters[i] = PointCPtr(new PointC);
+
+  return image;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+geometry_msgs::Point 
+cw2::get3DCenter(PointCPtr cloud) {
+  float min_x = FLT_MAX, min_y = FLT_MAX, min_z = FLT_MAX;
+  float max_x = -FLT_MAX, max_y = -FLT_MAX, max_z = -FLT_MAX;
+
+  for (const auto& pt : cloud->points) {
+    if (!pcl::isFinite(pt)) continue;
+    min_x = std::min(min_x, pt.x);
+    max_x = std::max(max_x, pt.x);
+    min_y = std::min(min_y, pt.y);
+    max_y = std::max(max_y, pt.y);
+    min_z = std::min(min_z, pt.z);
+    max_z = std::max(max_z, pt.z);
   }
 
-  for (int y = 0; y < img_size; ++y) {
-    for (int x = 0; x < img_size; ++x) {
-      int label = labels.at<int>(y, x);
-      if (label == 0) continue;
+  geometry_msgs::Point center;
+  center.x = (min_x + max_x) / 2.0f;
+  center.y = (min_y + max_y) / 2.0f;
+  center.z = (min_z + max_z) / 2.0f;
 
-      const auto &indices = pixel_to_point_indices[y * img_size + x];
-      for (int idx : indices) {
-        clusters[label - 1]->points.push_back(in_cloud_ptr->points[idx]);
-      }
-    }
-  }
-
-  for (size_t i = 0; i < clusters.size(); ++i) {
-    clusters[i]->width = clusters[i]->points.size();
-    clusters[i]->height = 1;
-    clusters[i]->is_dense = true;
-    ROS_DEBUG("Cluster %zu has %zu points", i, clusters[i]->size());
-  }
-
-  bool raw_ok = cv::imwrite("/home/hxy/Desktop/projection_raw.png", image);
-
-  bool dilated_ok = cv::imwrite("/home/hxy/Desktop/projection_dilated.png", dilated);
-
-
-  ROS_DEBUG("Saved raw projection image: %s", raw_ok ? "YES" : "NO");
-  ROS_DEBUG("Saved dilated image: %s", dilated_ok ? "YES" : "NO");
-
+  return center;
 }
-
-std::string 
-cw2::classifyObjectByPointCount(size_t num_points) {
-  /* This is the parameterized function to classify objects based on point count */
-  if (num_points > 20000) return "nought";
-  if (num_points > 8000)  return "cross";
-  return "unknown";
-}
-
-void 
-cw2::updateMergedObjects(const std::vector<PointCPtr> &clusters) {
-  /* This function updates the merged objects based on one view */
-  
-  computeObjectCenters(clusters);
-
-  int basket_index = -1;
-  int max_basket_points = -1;
-
-  for (size_t i = 0; i < detected_objects.size(); ++i) {
-    const auto& obj = detected_objects[i];
-
-    std::string shape;
-    if (obj.color == "darkred") {
-      shape = "basket";
-      // If the current object is the largest basket, keep it
-      if ((int)clusters[i]->points.size() > max_basket_points) {
-        max_basket_points = clusters[i]->points.size();
-        basket_index = i;
-      }
-      continue;  // Skip for now, will be added later
-    }
-    else if (obj.color == "black") {
-      shape = "obstacle";
-    }
-    else {
-      float estimated_size = 0.0f;
-      shape = classifyShape(clusters[i], estimated_size);
-    }
-
-    // Check if it matches an existing merged object
-    bool matched = false;
-    for (auto& merged : merged_objects) {
-      double dist = std::hypot(merged.center_x - obj.center_x,
-                               merged.center_y - obj.center_y);
-      if (dist < 0.03) {
-        if (shape == merged.shape) merged.vote_count++;
-        else merged.vote_count--;
-        matched = true;
-        break;
-      }
-    }
-
-    if (!matched) {
-      merged_objects.push_back({
-        obj.center_x,
-        obj.center_y,
-        (int)clusters[i]->points.size(),
-        shape,
-        obj.color,
-        1,
-        {(int)clusters[i]->points.size()}
-      });
-    }
-  }
-
-  // Handle the basket (only keep the largest one)
-  if (basket_index != -1) {
-    const auto& basket_obj = detected_objects[basket_index];
-    merged_objects.push_back({
-      basket_obj.center_x,
-      basket_obj.center_y,
-      (int)clusters[basket_index]->points.size(),
-      "basket",
-      basket_obj.color,
-      1,
-      {(int)clusters[basket_index]->points.size()}
-    });
-  }
-}
-
-void 
-cw2::refineObjectMerging(float dist_threshold) {
-  /* This function merges nearby merged objects based on distance and give results
-     based on voting. */
-  std::vector<MultiViewObject> merged_final;
-
-  for (const auto& current : merged_objects) {
-    bool merged = false;
-
-    for (auto& final : merged_final) {
-      double dist = std::hypot(current.center_x - final.center_x,
-                               current.center_y - final.center_y);
-      if (dist < dist_threshold) {
-        int original_final_count = final.point_count;
-        final.point_count += current.point_count;
-
-        final.point_counts_history.insert(final.point_counts_history.end(),
-          current.point_counts_history.begin(),
-          current.point_counts_history.end());
-        final.vote_count += current.vote_count;
-
-        if (current.point_count > original_final_count) {
-          final.center_x = current.center_x;
-          final.center_y = current.center_y;
-        }
-
-        // Shape logic
-        if (current.shape == "nought" || final.shape == "nought") {
-          final.shape = "nought";
-        } else if (current.shape == "cross" || final.shape == "cross") {
-          final.shape = "cross";
-        }
-
-        // Color logic
-        if (final.color == "unknown" && current.color != "unknown") {
-          final.color = current.color;
-        }
-
-        merged = true;
-        break;
-      }
-    }
-
-    if (!merged) {
-      merged_final.push_back(current);
-    }
-  }
-
-  int max_basket_idx = -1;
-  int max_basket_points = -1;
-
-  for (size_t i = 0; i < merged_final.size(); ++i) {
-    if (merged_final[i].shape == "basket" && merged_final[i].point_count > max_basket_points) {
-      max_basket_points = merged_final[i].point_count;
-      max_basket_idx = i;
-    }
-  }
-
-  // Remove other baskets, keeping only the largest one
-  if (max_basket_idx != -1) {
-    std::vector<MultiViewObject> filtered;
-    for (size_t i = 0; i < merged_final.size(); ++i) {
-      if (merged_final[i].shape != "basket" || i == max_basket_idx) {
-        filtered.push_back(merged_final[i]);
-      }
-    }
-    merged_final = filtered;
-  }
-
-  merged_objects = merged_final;
-}
-
-void 
-cw2::determineObjectFromVotes() {
-  /* This function finalizes the merging results and prints them. */
-  ROS_INFO("==== Results ====");
-
-  for (const auto& obj : merged_objects) {
-    if (obj.shape == "unknown") {
-      continue;  // Skip unknown shapes
-    }
-
-    std::ostringstream oss;
-    for (size_t i = 0; i < obj.point_counts_history.size(); ++i) {
-      oss << obj.point_counts_history[i];
-      if (i != obj.point_counts_history.size() - 1)
-        oss << " + ";
-    }
-
-    ROS_INFO_STREAM("Merged Object -> Shape: " << obj.shape
-                    << " | Color: " << obj.color
-                    << " | Center: (" << std::fixed << std::setprecision(3)
-                    << obj.center_x << ", " << obj.center_y << ")");
-  }
-}
-
-std::string
-cw2::classifyShape(PointCPtr cluster_cloud, float &estimated_x_mm) {
-if (!cluster_cloud || cluster_cloud->empty()) {
-estimated_x_mm = 0;
-return "unknown";
-}
-
-ROS_INFO("Classifying shape with OpenCV...");
-
-// ==== Step 1: Compute bounding box (2D) ====
-float min_x = FLT_MAX, max_x = -FLT_MAX;
-float min_y = FLT_MAX, max_y = -FLT_MAX;
-for (const auto &pt : cluster_cloud->points) {
-min_x = std::min(min_x, pt.x);
-max_x = std::max(max_x, pt.x);
-min_y = std::min(min_y, pt.y);
-max_y = std::max(max_y, pt.y);
-}
-
-float roi_width = max_x - min_x;
-float roi_height = max_y - min_y;
-float roi_span = std::max(roi_width, roi_height);
-estimated_x_mm = (roi_span * 1000.0f) / 5.0f; // x = span / 5
-
-const int img_size = 100;
-const float scale = img_size / roi_span;
-
-// ==== Step 2: Project cluster to binary image ====
-cv::Mat image = cv::Mat::zeros(img_size, img_size, CV_8UC1);
-
-for (const auto &pt : cluster_cloud->points) {
-int px = static_cast<int>((pt.x - min_x) * scale);
-int py = static_cast<int>((pt.y - min_y) * scale);
-if (px >= 0 && px < img_size && py >= 0 && py < img_size) {
-image.at<uchar>(py, px) = 255;
-}
-}
-
-// ==== Step 3: Compute fill ratio ====
-float fill_ratio = static_cast<float>(cv::countNonZero(image)) / (img_size * img_size);
-
-// ==== Step 4: Classify based on fill ratio ====
-std::string shape;
-if (fill_ratio > 0.5f) shape = "nought";
-else if (fill_ratio > 0.2f) shape = "cross";
-else shape = "unknown";
-
-// ==== Step 5: Round estimated x ====
-float x_vals[] = {20.0f, 30.0f, 40.0f};
-float min_diff = FLT_MAX;
-for (float x : x_vals) {
-if (std::abs(x - estimated_x_mm) < min_diff) {
-min_diff = std::abs(x - estimated_x_mm);
-estimated_x_mm = x;
-}
-}
-ROS_INFO_STREAM("Shape: " << shape
-<< " | Estimated size: " << estimated_x_mm << " mm"
-<< " | Fill ratio: " << fill_ratio);
-return shape;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////
-// geometry_msgs::PoseStamped
-// cw2::pointStampedToPoseStamped(const geometry_msgs::PointStamped &pt)
-// {
-//   geometry_msgs::PoseStamped pose;
-//   pose.header = pt.header;              
-//   pose.pose.position = pt.point;        
-
-//   // Assign default orientation 
-//   pose.pose.orientation.x = 0.0;
-//   pose.pose.orientation.y = 0.0;
-//   pose.pose.orientation.z = 0.0;
-//   pose.pose.orientation.w = 1.0;
-//   return pose;
-// }
